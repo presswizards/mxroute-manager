@@ -1,0 +1,23 @@
+# Environment variables and secrets
+.env
+deploy.sh
+
+# Local database and domain permissions configuration
+domain_mapping.json
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# OS/IDE metadata
+.DS_Store
+.vscode/
+.idea/

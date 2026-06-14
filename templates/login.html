@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mxtoolbox - Log In</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+
+    <!-- Custom stylesheet connection -->
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background: var(--bg-dark);
+            background-image: var(--bg-gradient);
+            font-family: var(--font-body);
+        }
+
+        .login-container {
+            width: 90%;
+            max-width: 440px;
+            padding: 1rem;
+        }
+
+        .login-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 3.5rem 2.5rem;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+            text-align: center;
+            transition: border-color var(--transition-speed) ease;
+        }
+
+        .login-card:hover {
+            border-color: rgba(92, 221, 141, 0.15);
+        }
+
+        .login-brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 2rem;
+        }
+
+        .login-brand span {
+            font-size: 2.25rem;
+        }
+
+        .login-brand h1 {
+            font-family: var(--font-heading);
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #ffffff, #88f2b1, #5cdd8d);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0;
+        }
+
+        .login-desc {
+            color: var(--color-secondary);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 2.5rem;
+        }
+
+        .btn-login {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            width: 100%;
+            padding: 0.9rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            background: var(--accent);
+            color: #121824;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all var(--transition-speed) ease;
+            box-shadow: 0 4px 20px var(--accent-glow);
+            text-decoration: none;
+        }
+
+        .btn-login:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(92, 221, 141, 0.4);
+            filter: brightness(1.08);
+        }
+
+        /* Admin login toggle link */
+        .admin-toggle {
+            display: inline-block;
+            margin-top: 2rem;
+            font-size: 0.78rem;
+            color: var(--color-muted);
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: inherit;
+            text-decoration: none;
+            transition: color var(--transition-speed) ease;
+            letter-spacing: 0.01em;
+        }
+
+        .admin-toggle:hover {
+            color: var(--color-secondary);
+        }
+
+        .admin-toggle svg {
+            vertical-align: middle;
+            margin-right: 0.3em;
+            transition: transform 0.25s ease;
+        }
+
+        .admin-toggle.open svg {
+            transform: rotate(180deg);
+        }
+
+        /* Collapsible admin form */
+        .admin-section {
+            overflow: hidden;
+            max-height: 0;
+            opacity: 0;
+            transition: max-height 0.4s ease, opacity 0.3s ease, margin-top 0.3s ease;
+            margin-top: 0;
+        }
+
+        .admin-section.open {
+            max-height: 340px;
+            opacity: 1;
+            margin-top: 1.5rem;
+        }
+
+        .admin-inner {
+            border-top: 1px solid var(--glass-border);
+            padding-top: 1.5rem;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .admin-label {
+            text-align: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--color-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .btn-admin {
+            width: 100%;
+            font-weight: 600;
+            padding: 0.85rem 1.5rem;
+            font-size: 0.95rem;
+            background: transparent;
+            color: var(--color-secondary);
+            border-radius: 10px;
+            border: 1px solid var(--glass-border);
+            margin-top: 0.25rem;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all var(--transition-speed) ease;
+        }
+
+        .btn-admin:hover {
+            background: rgba(92, 221, 141, 0.07);
+            border-color: rgba(92, 221, 141, 0.3);
+            color: var(--accent);
+        }
+    </style>
+</head>
+
+<body data-has-error="{{ 'true' if error else 'false' }}">
+    <div class="login-container">
+        <div class="login-card">
+            <div class="login-brand">
+                <span>🛠️</span>
+                <h1>mxtoolbox</h1>
+            </div>
+
+            <!-- Error Message Alert -->
+            {% if error %}
+            <div
+                style="background: rgba(248, 113, 113, 0.15); border: 1px solid var(--danger); border-radius: 12px; color: var(--danger); padding: 0.8rem; margin-bottom: 1.5rem; font-size: 0.85rem; text-align: left; display: flex; align-items: center; gap: 0.5rem;">
+                <span>⚠️</span> {{ error }}
+            </div>
+            {% endif %}
+
+            <p class="login-desc">
+                Welcome to the administration panel. Sign in with your OIDC provider to continue.
+            </p>
+
+            <!-- Primary: OIDC login -->
+            <a href="/login/redirect" class="btn-login">
+                <span>🔑</span> Sign In with OIDC
+            </a>
+
+            <!-- Secondary: collapsible admin login -->
+            <button class="admin-toggle" id="adminToggle" aria-expanded="false" aria-controls="adminSection"
+                onclick="toggleAdmin()">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true">
+                    <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                </svg>
+                Admin login
+            </button>
+
+            <div class="admin-section" id="adminSection" aria-hidden="true">
+                <div class="admin-inner">
+                    <p class="admin-label">Local Admin</p>
+                    <form action="/login" method="POST" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                        <div class="form-group">
+                            <label for="username"
+                                style="font-size: 0.85rem; font-weight: 500; color: var(--color-secondary);">Username</label>
+                            <input type="text" id="username" name="username" placeholder="admin" required
+                                autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label for="password"
+                                style="font-size: 0.85rem; font-weight: 500; color: var(--color-secondary);">Password</label>
+                            <input type="password" id="password" name="password" placeholder="••••••••••••" required
+                                autocomplete="current-password">
+                        </div>
+                        <button type="submit" class="btn-admin">
+                            <span>👤</span> Sign In Locally
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleAdmin() {
+            const section = document.getElementById('adminSection');
+            const toggle = document.getElementById('adminToggle');
+            const isOpen = section.classList.toggle('open');
+            toggle.classList.toggle('open', isOpen);
+            toggle.setAttribute('aria-expanded', isOpen);
+            section.setAttribute('aria-hidden', !isOpen);
+        }
+
+        // If the page loaded with an error, auto-expand the admin form
+        // (the user may have just submitted the local login form)
+        const hasLoginError = document.body.dataset.hasError === 'true';
+        if (hasLoginError) toggleAdmin();
+    </script>
+</body>
+
+</html>
