@@ -1,8 +1,14 @@
-# MXToolbox (MXroute & Cloudflare Email Manager)
+# MXToolbox (MXroute Email Manager)
 
-MXToolbox is a self-hosted Flask-based web application designed to simplify email hosting management on the MXroute platform. It integrates directly with **MXroute** for mail service management and **Cloudflare** for automated DNS provisioning (MX, SPF, DKIM, and verification records). 
+MXToolbox is a self-hosted Flask-based web application designed to simplify email hosting management on the MXroute platform. It integrates directly with **MXroute** for mail service management and **Cloudflare** for automated DNS provisioning (MX, SPF, DKIM, and verification records).
+Authentication is supported via OpenID Connect (OIDC) with fine-grained access control, allowing administrators to delegate specific domain management to individual OIDC users.
 
-Authentication is supported via OpenID Connect (OIDC) with fine-grained access control, allowing administrators to delegate specific domain management to individual users.
+## Why?
+
+This started as a way to easily onboard new users to MXroute email domains I own, and a way to reset email passwords for the people I manage email addresses for without needing to go through the pain of logging into each domain individually at mxRoute. I got carried away with the scope creep and ended up trying to get usage out of all of the possibilities of the mxRoute API. After that I figured I could get it to automatically setup cloudflare DNS records to go with it.
+
+> [!IMPORTANT]
+> This tool is 90% vibe coded. And was done so to fix a particular annoyance I had and to learn some python, javascript and how to use API's. It's probably not the most robust or secure thing in the world. It's targeted to my specific needs and uses case and is not meant for the public, however if you want to use it for your own use case, be my guest. And if you feel generous enough to point out my shortcomings, please do so in the issues tab. 
 
 ---
 
