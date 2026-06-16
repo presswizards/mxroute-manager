@@ -71,8 +71,15 @@ def get_admin_user():
 def get_admin_password():
     return get_config_value("ADMIN_PASSWORD")
 
+def use_secure_cookies():
+    """Use Secure cookies when FORCE_HTTPS is set, or OIDC is enabled (legacy default)."""
+    explicit = os.getenv("FORCE_HTTPS")
+    if explicit is not None and explicit.strip() != "":
+        return explicit.lower() in ("true", "1", "yes")
+    return is_oidc_enabled()
+
 app.config.update(
-    SESSION_COOKIE_SECURE=os.getenv("OIDC_ENABLED", "true").lower() == "true", # Enforce secure session cookies initially
+    SESSION_COOKIE_SECURE=use_secure_cookies(),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
 )
@@ -263,6 +270,13 @@ def has_domain_access(user, domain):
     mapping = load_domain_mapping()
     return domain.lower() in [d.lower() for d in mapping.get(email, [])]
 
+def require_compat_domain_access(domain):
+    """Enforce domain access on backward-compat form routes."""
+    user = get_current_user()
+    if not user or not has_domain_access(user, domain):
+        return jsonify({"success": False, "error": {"message": f"Forbidden: You do not have access to domain '{domain}'"}}), 403
+    return None
+
 # Decorators to enforce authorization constraints
 def require_admin(f):
     @wraps(f)
@@ -312,7 +326,7 @@ def inject_global_vars():
 @app.after_request
 def set_csrf_cookie(response):
     if "csrf_token" in session:
-        response.set_cookie("csrf_token", session["csrf_token"], samesite="Lax", secure=is_oidc_enabled())
+        response.set_cookie("csrf_token", session["csrf_token"], samesite="Lax", secure=use_secure_cookies())
     return response
 
 @app.before_request
@@ -1077,11 +1091,11 @@ def create_email_compat():
     email_username = request.form.get('user')
     if not validate_username(email_username):
         return jsonify({"success": False, "error": {"message": "Invalid mailbox username format"}}), 400
-        
-    if is_oidc_enabled():
-        current_user = get_current_user()
-        if not current_user or not has_domain_access(current_user, domain):
-            return jsonify({"success": False, "error": {"message": f"Forbidden: You do not have access to domain '{domain}'"}}), 403
+
+    denied = require_compat_domain_access(domain)
+    if denied:
+        return denied
+
     password = request.form.get('password')
     payload = {
         "username": email_username,
@@ -1112,11 +1126,11 @@ def update_password_compat():
     email_username = request.form.get('user')
     if not validate_username(email_username):
         return jsonify({"success": False, "error": {"message": "Invalid mailbox username format"}}), 400
-        
-    if is_oidc_enabled():
-        current_user = get_current_user()
-        if not current_user or not has_domain_access(current_user, domain):
-            return jsonify({"success": False, "error": {"message": f"Forbidden: You do not have access to domain '{domain}'"}}), 403
+
+    denied = require_compat_domain_access(domain)
+    if denied:
+        return denied
+
     password = request.form.get('password')
     payload = {"password": password}
     return mx_request("PATCH", f"/domains/{domain}/email-accounts/{email_username}", payload)
@@ -1137,11 +1151,11 @@ def delete_email_compat():
     email_username = request.form.get('user')
     if not validate_username(email_username):
         return jsonify({"success": False, "error": {"message": "Invalid mailbox username format"}}), 400
-        
-    if is_oidc_enabled():
-        current_user = get_current_user()
-        if not current_user or not has_domain_access(current_user, domain):
-            return jsonify({"success": False, "error": {"message": f"Forbidden: You do not have access to domain '{domain}'"}}), 403
+
+    denied = require_compat_domain_access(domain)
+    if denied:
+        return denied
+
     return mx_request("DELETE", f"/domains/{domain}/email-accounts/{email_username}")
 
 # --- EMAIL FORWARDERS ---

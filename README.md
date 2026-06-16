@@ -50,6 +50,7 @@ And configure the variables inside `.env`:
 - `OIDC_ADMIN_USERS`: Comma-separated list of emails that should have super-administrator privileges.
 - `OIDC_ADMIN_GROUP`: OIDC group name that automatically grants admin privileges (defaults to `administrators`).
 - `SECRET_KEY`: A long, random string used by Flask to sign session cookies securely.
+- `FORCE_HTTPS`: Set to `true` when the app is served over HTTPS. This enables `Secure` session and CSRF cookies independently of OIDC — required when using local username/password auth behind TLS. When unset, secure cookies follow the OIDC setting (legacy default).
 
 ### 4. Local Fallback Admin
 - `ADMIN_USER`: The username for local fallback (defaults to `admin`).

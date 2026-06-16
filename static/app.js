@@ -1,7 +1,36 @@
 // --- 1. Global App State & Helpers ---
 let activeDomain = "";
+let activeDomainMailHosting = null;
 let accountQuota = null;
 let currentUser = null;
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function jsString(value) {
+    return JSON.stringify(String(value ?? ""));
+}
+
+function secureRandomInt(max) {
+    const buffer = new Uint32Array(1);
+    crypto.getRandomValues(buffer);
+    return buffer[0] % max;
+}
+
+function shuffleString(str) {
+    const chars = str.split("");
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = secureRandomInt(i + 1);
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join("");
+}
 
 // Helper to get cookie by name
 function getCookie(name) {
@@ -100,18 +129,16 @@ function generateRandomPassword() {
     const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]:;?><,./-=";
     let retVal = "";
     
-    // Ensure we satisfy at least one of each requirement
-    retVal += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
-    retVal += "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)];
-    retVal += "0123456789"[Math.floor(Math.random() * 10)];
-    retVal += "!@#$%^&*()_+~`|}{[]:;?><,./-="[Math.floor(Math.random() * 29)];
+    retVal += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[secureRandomInt(26)];
+    retVal += "abcdefghijklmnopqrstuvwxyz"[secureRandomInt(26)];
+    retVal += "0123456789"[secureRandomInt(10)];
+    retVal += "!@#$%^&*()_+~`|}{[]:;?><,./-="[secureRandomInt(29)];
     
     for (let i = 4; i < length; ++i) {
-        retVal += charset[Math.floor(Math.random() * charset.length)];
+        retVal += charset[secureRandomInt(charset.length)];
     }
     
-    // Shuffle the characters
-    return retVal.split('').sort(() => 0.5 - Math.random()).join('');
+    return shuffleString(retVal);
 }
 
 // --- 2. Live Password Verification Logic ---
@@ -292,7 +319,7 @@ async function loadAccountQuota() {
             document.getElementById("quota-percentage").textContent = percent;
             
             if (data.grace_period) {
-                document.getElementById("quota-grace").innerHTML = `<span style="color: var(--danger);">Quota Exceeded! Deadline: ${data.grace_period.deadline}</span>`;
+                document.getElementById("quota-grace").innerHTML = `<span style="color: var(--danger);">Quota Exceeded! Deadline: ${escapeHtml(data.grace_period.deadline)}</span>`;
             } else {
                 document.getElementById("quota-grace").textContent = "Compliant";
             }
@@ -316,12 +343,12 @@ async function loadDomainsList() {
             const rows = {};
             result.data.forEach(domain => {
                 const tr = document.createElement("tr");
-                const statusId = `domain-status-${domain.replace(/\./g, '-')}`;
+                const statusId = `domain-status-${domain.replace(/[^a-zA-Z0-9-]/g, '-')}`;
                 tr.innerHTML = `
-                    <td><strong>${domain}</strong></td>
+                    <td><strong>${escapeHtml(domain)}</strong></td>
                     <td id="${statusId}"><span style="color: var(--color-muted); font-size: 0.85rem;">⌛ checking...</span></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain('${domain}')">Delete</button>
+                        <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain(${jsString(domain)})">Delete</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -351,7 +378,7 @@ async function loadDomainsList() {
             tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No domains found on this account.</td></tr>';
         }
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger); font-weight: 500;">Failed to load domains: ${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger); font-weight: 500;">Failed to load domains: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
@@ -361,8 +388,9 @@ async function loadDomainDetails(domain) {
         const result = await apiRequest(`/api/domains/${domain}`);
         if (result.success && result.data) {
             const data = result.data;
-            document.getElementById("dash-mail-status").innerHTML = data.mail_hosting ? 
-                `<span class="status-indicator success"><span class="dot"></span> Enabled</span>` : 
+            activeDomainMailHosting = !!data.mail_hosting;
+            document.getElementById("dash-mail-status").innerHTML = data.mail_hosting ?
+                `<span class="status-indicator success"><span class="dot"></span> Enabled</span>` :
                 `<span class="status-indicator danger"><span class="dot"></span> Disabled</span>`;
             
             document.getElementById("dash-pointers-count").textContent = data.pointers ? data.pointers.length : 0;
@@ -382,9 +410,8 @@ async function loadDomainDetails(domain) {
 
 // Toggle Mail Hosting status
 document.getElementById("btn-toggle-mail-hosting").addEventListener("click", async () => {
-    if (!activeDomain) return;
-    const statusText = document.getElementById("dash-mail-status").textContent.trim();
-    const nextState = !(statusText === "Enabled");
+    if (!activeDomain || activeDomainMailHosting === null) return;
+    const nextState = !activeDomainMailHosting;
     
     try {
         await apiRequest(`/api/domains/${activeDomain}/mail-status`, "PATCH", { enabled: nextState });
@@ -438,7 +465,7 @@ document.getElementById("form-create-domain").addEventListener("submit", async (
             progressList.innerHTML = "";
             if (result.steps) {
                 result.steps.forEach(step => {
-                    progressList.innerHTML += `<li>✅ ${step}</li>`;
+                    progressList.innerHTML += `<li>✅ ${escapeHtml(step)}</li>`;
                 });
             }
             showAlert("success", `Domain "${domainName}" set up successfully in Cloudflare and MXroute!`);
@@ -450,10 +477,10 @@ document.getElementById("form-create-domain").addEventListener("submit", async (
             if (err.steps) {
                 progressList.innerHTML = "";
                 err.steps.forEach(step => {
-                    progressList.innerHTML += `<li>✅ ${step}</li>`;
+                    progressList.innerHTML += `<li>✅ ${escapeHtml(step)}</li>`;
                 });
             }
-            progressList.innerHTML += `<li style="color: var(--danger);">❌ Failed: ${err.message}</li>`;
+            progressList.innerHTML += `<li style="color: var(--danger);">❌ Failed: ${escapeHtml(err.message)}</li>`;
             showAlert("error", `Setup failed: ${err.message}`);
         } finally {
             submitBtn.disabled = false;
@@ -506,10 +533,10 @@ async function loadPointersList(domain) {
             result.data.forEach(pointer => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
-                    <td><strong>${pointer.pointer}</strong></td>
-                    <td><span class="badge" style="font-size:0.75rem; padding:0.1rem 0.4rem; background:rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius:4px;">${pointer.type}</span></td>
+                    <td><strong>${escapeHtml(pointer.pointer)}</strong></td>
+                    <td><span class="badge" style="font-size:0.75rem; padding:0.1rem 0.4rem; background:rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius:4px;">${escapeHtml(pointer.type)}</span></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleDeletePointer('${pointer.pointer}')">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleDeletePointer(${jsString(pointer.pointer)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -628,7 +655,7 @@ async function loadDNSInfo(domain) {
                     const mxRow = document.createElement("div");
                     mxRow.className = "copyable-code mb-2";
                     mxRow.innerHTML = `
-                        <span><strong>Priority ${mx.priority}:</strong> <span id="${rowId}">${mx.hostname}</span></span>
+                        <span><strong>Priority ${escapeHtml(mx.priority)}:</strong> <span id="${rowId}">${escapeHtml(mx.hostname)}</span></span>
                         <button class="copy-btn" onclick="copyText('${rowId}')">Copy</button>
                     `;
                     mxContainer.appendChild(mxRow);
@@ -674,13 +701,13 @@ async function loadEmailsList(domain) {
                 
                 tr.innerHTML = `
                     <td>
-                        <div style="font-weight: 600;">${account.username}@${domain}</div>
+                        <div style="font-weight: 600;">${escapeHtml(account.username)}@${escapeHtml(domain)}</div>
                         ${account.suspended ? '<span style="font-size:0.75rem; color: var(--danger); font-weight:500;">🚫 Suspended</span>' : ''}
                     </td>
                     <td>
                         <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
-                            <span>${account.usage.toFixed(1)} MB used</span>
-                            <span>Limit: ${quotaVal}</span>
+                            <span>${escapeHtml(account.usage.toFixed(1))} MB used</span>
+                            <span>Limit: ${escapeHtml(quotaVal)}</span>
                         </div>
                         <div class="quota-bar" style="height: 4px;">
                             <div class="quota-bar-fill ${quotaColor}" style="width: ${account.quota === 0 ? '1%' : quotaPercent + '%'}"></div>
@@ -688,8 +715,8 @@ async function loadEmailsList(domain) {
                     </td>
                     <td>
                         <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
-                            <span>${account.sent} sent today</span>
-                            <span>Limit: ${limitVal}</span>
+                            <span>${escapeHtml(account.sent)} sent today</span>
+                            <span>Limit: ${escapeHtml(limitVal)}</span>
                         </div>
                         <div class="quota-bar" style="height: 4px;">
                             <div class="quota-bar-fill" style="width: ${sentPercent}%; background: var(--accent);"></div>
@@ -697,10 +724,10 @@ async function loadEmailsList(domain) {
                     </td>
                     <td style="text-align: right;">
                         <div class="flex-row" style="justify-content: flex-end; gap: 0.5rem;">
-                            <button class="btn btn-secondary btn-sm" onclick="openPasswordModal('${account.username}')">🔑 Pass</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openQuotaModal('${account.username}', ${account.quota}, ${account.limit})">⚙️ Limit</button>
-                            <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend('${account.username}', ${account.suspended})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
-                            <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail('${account.username}')">🗑️ Delete</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsString(account.username)})">🔑 Pass</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
+                            <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
+                            <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail(${jsString(account.username)})">🗑️ Delete</button>
                         </div>
                     </td>
                 `;
@@ -710,7 +737,7 @@ async function loadEmailsList(domain) {
             tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No mailboxes found for this domain.</td></tr>';
         }
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
@@ -842,13 +869,14 @@ async function handleDeleteEmail(username) {
 
 // Toggle Email Account Suspension
 async function handleToggleSuspend(username, isSuspended) {
-    const actionText = isSuspended ? "activate" : "suspend";
+    const suspended = isSuspended === true || isSuspended === "true";
+    const actionText = suspended ? "activate" : "suspend";
     if (!confirm(`Are you sure you want to ${actionText} mailbox "${username}@${activeDomain}"?`)) {
         return;
     }
     
     try {
-        await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}`, "PATCH", { suspended: !isSuspended });
+        await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}`, "PATCH", { suspended: !suspended });
         showAlert("success", `Mailbox ${username}@${activeDomain} ${actionText}d successfully.`);
         await loadEmailsList(activeDomain);
     } catch (err) {
@@ -942,13 +970,13 @@ async function loadForwardersList(domain) {
         if (result.success && result.data && result.data.length > 0) {
             result.data.forEach(forwarder => {
                 const tr = document.createElement("tr");
-                const destHtml = forwarder.destinations.map(d => `<div style="font-size:0.85rem; color:var(--color-secondary);">${d}</div>`).join('');
+                const destHtml = forwarder.destinations.map(d => `<div style="font-size:0.85rem; color:var(--color-secondary);">${escapeHtml(d)}</div>`).join('');
                 
                 tr.innerHTML = `
-                    <td><strong>${forwarder.alias}@${domain}</strong></td>
+                    <td><strong>${escapeHtml(forwarder.alias)}@${escapeHtml(domain)}</strong></td>
                     <td>${destHtml}</td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder('${forwarder.alias}')">Remove</button>
+                        <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder(${jsString(forwarder.alias)})">Remove</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -957,7 +985,7 @@ async function loadForwardersList(domain) {
             tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No forwarders active for this domain.</td></tr>';
         }
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
@@ -1050,9 +1078,9 @@ async function loadSpamWhitelist(domain) {
             result.data.forEach(entry => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
-                    <td><strong>${entry}</strong></td>
+                    <td><strong>${escapeHtml(entry)}</strong></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('whitelist', '${entry}')">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('whitelist', ${jsString(entry)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1095,9 +1123,9 @@ async function loadSpamBlacklist(domain) {
             result.data.forEach(entry => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
-                    <td><strong>${entry}</strong></td>
+                    <td><strong>${escapeHtml(entry)}</strong></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('blacklist', '${entry}')">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('blacklist', ${jsString(entry)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1230,10 +1258,17 @@ async function loadDelegationsPage() {
                     label.className = "flex-row align-center";
                     label.style.cursor = "pointer";
                     label.style.fontSize = "0.9rem";
-                    label.innerHTML = `
-                        <input type="checkbox" name="delegated-domain-cb" value="${domain}" style="width: auto; height: auto; margin: 0;">
-                        <span>${domain}</span>
-                    `;
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.name = "delegated-domain-cb";
+                    checkbox.value = domain;
+                    checkbox.style.width = "auto";
+                    checkbox.style.height = "auto";
+                    checkbox.style.margin = "0";
+                    const span = document.createElement("span");
+                    span.textContent = domain;
+                    label.appendChild(checkbox);
+                    label.appendChild(span);
                     checklist.appendChild(label);
                 });
             }
@@ -1252,14 +1287,16 @@ async function loadDelegationsPage() {
                 if (item.domains.includes("*")) {
                     domainsStr = '<span style="color: var(--accent); font-weight: 600;">⭐ Admin</span>';
                 } else if (item.domains.length > 0) {
-                    domainsStr = item.domains.join(", ");
+                    domainsStr = item.domains.map(escapeHtml).join(", ");
                 } else {
                     domainsStr = '<span style="color: var(--color-muted); font-style: italic;">None</span>';
                 }
                 
                 // 1. Email Cell
                 const emailTd = document.createElement("td");
-                emailTd.innerHTML = `<strong>${item.email}</strong>`;
+                const emailStrong = document.createElement("strong");
+                emailStrong.textContent = item.email;
+                emailTd.appendChild(emailStrong);
                 tr.appendChild(emailTd);
                 
                 // 2. Domains Cell
@@ -1312,8 +1349,8 @@ async function loadDelegationsPage() {
             listBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No delegations configured yet.</td></tr>';
         }
     } catch (err) {
-        listBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load delegations: ${err.message}</td></tr>`;
-        checklist.innerHTML = `<div style="color: var(--danger); font-size: 0.9rem;">Failed to load domains: ${err.message}</div>`;
+        listBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load delegations: ${escapeHtml(err.message)}</td></tr>`;
+        checklist.innerHTML = `<div style="color: var(--danger); font-size: 0.9rem;">Failed to load domains: ${escapeHtml(err.message)}</div>`;
     }
 }
 
