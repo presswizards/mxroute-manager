@@ -29,7 +29,29 @@ import sqlite3
 DATABASE_FILE = os.getenv("DATABASE_FILE", os.path.join(os.path.dirname(__file__), "mxroute-manager.db"))
 MAPPING_FILE = os.path.join(os.path.dirname(__file__), "domain_mapping.json")
 
+ENV_ONLY_SECRET_KEYS = frozenset({
+    "MX_API_KEY",
+    "CF_API_TOKEN",
+    "OIDC_CLIENT_SECRET",
+})
+MASKED_SECRET_KEYS = ENV_ONLY_SECRET_KEYS | frozenset({"ADMIN_PASSWORD"})
+ADMIN_PASSWORD_HASH_KEY = "ADMIN_PASSWORD_HASH"
+SETTINGS_UI_KEYS = [
+    "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_DISCOVERY_URL",
+    "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
+    "MX_SERVER", "MX_USER", "CF_ACCOUNT_ID",
+    "ADMIN_USER",
+]
+SETTINGS_RESPONSE_KEYS = SETTINGS_UI_KEYS + sorted(MASKED_SECRET_KEYS)
+
+
+def get_env_config(key, default=None):
+    return os.getenv(key, default)
+
+
 def get_config_value(key, default=None):
+    if key in ENV_ONLY_SECRET_KEYS:
+        return get_env_config(key, default)
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
@@ -40,7 +62,108 @@ def get_config_value(key, default=None):
             return row[0]
     except Exception:
         pass
-    return os.getenv(key, default)
+    return get_env_config(key, default)
+
+
+def get_admin_password_hash():
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def verify_admin_password(password):
+    password_hash = get_admin_password_hash()
+    if not password_hash:
+        return False
+    from werkzeug.security import check_password_hash
+    return check_password_hash(password_hash, password)
+
+
+def set_admin_password_hash(password, admin_email=None):
+    from werkzeug.security import generate_password_hash
+    password_hash = generate_password_hash(password)
+    admin_email = (admin_email or get_admin_user()).lower().strip()
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (ADMIN_PASSWORD_HASH_KEY, password_hash),
+    )
+    cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE users SET password_hash = ?, is_admin = 1 WHERE id = ?",
+            (password_hash, row[0]),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, is_admin) VALUES (?, ?, 1)",
+            (admin_email, password_hash),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _looks_like_password_hash(value):
+    return isinstance(value, str) and (
+        value.startswith("pbkdf2:") or value.startswith("scrypt:")
+    )
+
+
+def migrate_settings_secrets(cursor):
+    for key in ENV_ONLY_SECRET_KEYS:
+        cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    cursor.execute("SELECT value FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    legacy_password_row = cursor.fetchone()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+    hash_row = cursor.fetchone()
+
+    if legacy_password_row and legacy_password_row[0] and not _looks_like_password_hash(legacy_password_row[0]):
+        from werkzeug.security import generate_password_hash
+        cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (ADMIN_PASSWORD_HASH_KEY, generate_password_hash(legacy_password_row[0])),
+        )
+        cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    elif not hash_row or not hash_row[0]:
+        env_password = get_env_config("ADMIN_PASSWORD")
+        if env_password:
+            from werkzeug.security import generate_password_hash
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (ADMIN_PASSWORD_HASH_KEY, generate_password_hash(env_password)),
+            )
+            cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+
+
+def is_secret_configured(key):
+    if key == "ADMIN_PASSWORD":
+        return bool(get_admin_password_hash())
+    if key in ENV_ONLY_SECRET_KEYS:
+        return bool(get_env_config(key))
+    return False
+
+
+def mask_settings_for_response():
+    settings_dict = {}
+    for key in SETTINGS_RESPONSE_KEYS:
+        if key in MASKED_SECRET_KEYS:
+            settings_dict[key] = ""
+            settings_dict[f"{key}_configured"] = is_secret_configured(key)
+        else:
+            settings_dict[key] = get_config_value(key, "")
+    return settings_dict
 
 # Dynamic Configuration Getters
 def is_oidc_enabled():
@@ -71,8 +194,9 @@ def get_oidc_admin_group():
 def get_admin_user():
     return get_config_value("ADMIN_USER", "admin").strip().lower()
 
-def get_admin_password():
-    return get_config_value("ADMIN_PASSWORD")
+
+def admin_password_configured():
+    return bool(get_admin_password_hash())
 
 def get_dmarc_record():
     default = os.getenv("DMARC_RECORD", "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;")
@@ -176,16 +300,19 @@ def init_db():
             except Exception as e:
                 app.logger.error(f"Failed to migrate legacy mapping file: {e}")
  
-        # Seed initial admin user if empty and ADMIN_PASSWORD is set
+        migrate_settings_secrets(cursor)
+        conn.commit()
+
+        # Seed initial admin user if empty and an admin password hash exists
         cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
         admin_count = cursor.fetchone()[0]
-        if admin_count == 0 and get_admin_password():
-            from werkzeug.security import generate_password_hash
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+        admin_hash_row = cursor.fetchone()
+        if admin_count == 0 and admin_hash_row and admin_hash_row[0]:
             admin_email = get_admin_user().lower().strip()
-            hashed_password = generate_password_hash(get_admin_password())
             cursor.execute(
                 "INSERT OR IGNORE INTO users (email, password_hash, is_admin) VALUES (?, ?, 1)",
-                (admin_email, hashed_password)
+                (admin_email, admin_hash_row[0])
             )
             conn.commit()
             app.logger.info(f"Seeded initial admin user '{admin_email}' into SQLite database.")
@@ -834,8 +961,8 @@ def login_page():
                 write_audit_log("auth.login", user_row[1], user_row[1])
                 return redirect(url_for('home'))
         
-        # Fallback to local admin config check
-        if get_admin_password() and username == get_admin_user() and secrets.compare_digest(password, get_admin_password()):
+        # Fallback to local admin config check (hashed password only)
+        if username == get_admin_user() and verify_admin_password(password):
             session["user"] = {
                 "email": username,
                 "is_admin": True,
@@ -1152,40 +1279,39 @@ def delete_delegation(email=None):
 @app.route('/api/admin/settings', methods=['GET'])
 @require_admin
 def get_settings():
-    keys = [
-        "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_DISCOVERY_URL",
-        "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
-        "MX_SERVER", "MX_USER", "MX_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID",
-        "ADMIN_USER", "ADMIN_PASSWORD"
-    ]
-    settings_dict = {}
-    for key in keys:
-        settings_dict[key] = get_config_value(key, "")
     return jsonify({
         "success": True,
-        "data": settings_dict
+        "data": mask_settings_for_response()
     })
 
 @app.route('/api/admin/settings', methods=['POST'])
 @require_admin
 def update_settings():
     data = request.json or {}
-    allowed_keys = [
-        "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_DISCOVERY_URL",
-        "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
-        "MX_SERVER", "MX_USER", "MX_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID",
-        "ADMIN_USER", "ADMIN_PASSWORD"
-    ]
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
-        for key in allowed_keys:
+        updated_keys = []
+
+        for key in SETTINGS_UI_KEYS:
             if key in data:
                 val = str(data[key]).strip()
                 cursor.execute(
                     "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                     (key, val)
                 )
+                updated_keys.append(key)
+
+        conn.commit()
+
+        if "ADMIN_PASSWORD" in data:
+            new_password = str(data["ADMIN_PASSWORD"])
+            if new_password.strip():
+                admin_email = str(data.get("ADMIN_USER", get_admin_user())).strip().lower()
+                set_admin_password_hash(new_password.strip(), admin_email=admin_email)
+                updated_keys.append("ADMIN_PASSWORD")
+
+        migrate_settings_secrets(cursor)
         conn.commit()
         conn.close()
         
@@ -1195,7 +1321,7 @@ def update_settings():
             _oidc_config = None
             _oidc_config_fetched_at = 0.0
             
-        audit("settings.update", target="system", keys=[key for key in allowed_keys if key in data])
+        audit("settings.update", target="system", keys=updated_keys)
         return jsonify({"success": True})
     except Exception as e:
         app.logger.error(f"Error saving system settings: {e}")

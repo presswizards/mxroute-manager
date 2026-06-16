@@ -1974,22 +1974,25 @@ document.addEventListener("DOMContentLoaded", async () => {
                 OIDC_DISCOVERY_URL: document.getElementById("setting-oidc-discovery-url").value.trim(),
                 OIDC_REDIRECT_URI: document.getElementById("setting-oidc-redirect-uri").value.trim(),
                 OIDC_CLIENT_ID: document.getElementById("setting-oidc-client-id").value.trim(),
-                OIDC_CLIENT_SECRET: document.getElementById("setting-oidc-client-secret").value,
                 OIDC_ADMIN_USERS: document.getElementById("setting-oidc-admin-users").value.trim(),
                 OIDC_ADMIN_GROUP: document.getElementById("setting-oidc-admin-group").value.trim(),
                 MX_SERVER: document.getElementById("setting-mx-server").value.trim(),
                 MX_USER: document.getElementById("setting-mx-user").value.trim(),
-                MX_API_KEY: document.getElementById("setting-mx-api-key").value,
-                CF_API_TOKEN: document.getElementById("setting-cf-api-token").value,
                 CF_ACCOUNT_ID: document.getElementById("setting-cf-account-id").value.trim(),
                 ADMIN_USER: document.getElementById("setting-admin-user").value.trim(),
-                ADMIN_PASSWORD: document.getElementById("setting-admin-password").value
             };
+
+            const newAdminPassword = document.getElementById("setting-admin-password").value;
+            if (newAdminPassword.trim()) {
+                payload.ADMIN_PASSWORD = newAdminPassword;
+            }
             
             try {
                 const res = await apiRequest("/api/admin/settings", "POST", payload);
                 if (res.success) {
                     showAlert("success", "System settings successfully updated!");
+                    document.getElementById("setting-admin-password").value = "";
+                    await loadSettingsPage();
                 } else {
                     showAlert("error", res.error.message || "Failed to update system settings.");
                 }
@@ -2033,6 +2036,14 @@ function setTheme(theme, save = true) {
     });
 }
 
+function renderSecretStatus(elementId, configured, envLabel = "environment") {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.innerHTML = configured
+        ? `<span class="status-indicator success"><span class="dot"></span> Configured via ${escapeHtml(envLabel)}</span>`
+        : `<span class="status-indicator danger"><span class="dot"></span> Not configured</span>`;
+}
+
 async function loadSettingsPage() {
     // Refresh theme active selector highlighted state
     const activeTheme = localStorage.getItem("workspace-theme") || "emerald";
@@ -2052,19 +2063,24 @@ async function loadSettingsPage() {
                 document.getElementById("setting-oidc-discovery-url").value = settings.OIDC_DISCOVERY_URL || "";
                 document.getElementById("setting-oidc-redirect-uri").value = settings.OIDC_REDIRECT_URI || "";
                 document.getElementById("setting-oidc-client-id").value = settings.OIDC_CLIENT_ID || "";
-                document.getElementById("setting-oidc-client-secret").value = settings.OIDC_CLIENT_SECRET || "";
+                renderSecretStatus("setting-oidc-client-secret-status", settings.OIDC_CLIENT_SECRET_configured);
                 document.getElementById("setting-oidc-admin-users").value = settings.OIDC_ADMIN_USERS || "";
                 document.getElementById("setting-oidc-admin-group").value = settings.OIDC_ADMIN_GROUP || "administrators";
                 
                 document.getElementById("setting-mx-server").value = settings.MX_SERVER || "";
                 document.getElementById("setting-mx-user").value = settings.MX_USER || "";
-                document.getElementById("setting-mx-api-key").value = settings.MX_API_KEY || "";
+                renderSecretStatus("setting-mx-api-key-status", settings.MX_API_KEY_configured);
                 
-                document.getElementById("setting-cf-api-token").value = settings.CF_API_TOKEN || "";
+                renderSecretStatus("setting-cf-api-token-status", settings.CF_API_TOKEN_configured);
                 document.getElementById("setting-cf-account-id").value = settings.CF_ACCOUNT_ID || "";
                 
                 document.getElementById("setting-admin-user").value = settings.ADMIN_USER || "admin";
-                document.getElementById("setting-admin-password").value = settings.ADMIN_PASSWORD || "";
+                document.getElementById("setting-admin-password").value = "";
+                renderSecretStatus(
+                    "setting-admin-password-status",
+                    settings.ADMIN_PASSWORD_configured,
+                    "secure hash"
+                );
             }
         } catch (err) {
             showAlert("error", `Failed to load settings: ${err.message}`);
