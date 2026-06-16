@@ -1,3 +1,6 @@
+# Audit logs (daily files in logs/)
+logs/
+
 # Environment variables and secrets
 .env
 deploy.sh
@@ -5,6 +8,7 @@ deploy.sh
 # Local database and domain permissions configuration
 domain_mapping.json
 domain_mapping.json.bak
+mxroute-manager.db
 mxtoolbox.db
 *.db
 *.db-journal
