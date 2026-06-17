@@ -1906,6 +1906,10 @@ document.getElementById("form-create-delegation").addEventListener("submit", asy
     const domains = Array.from(checkboxes).map(cb => cb.value);
     
     if (!email) return;
+    if (!/^[a-zA-Z0-9._%+-@]+$/.test(email)) {
+        showAlert("error", "Invalid user identifier. Use a username (e.g. billy) or email address.");
+        return;
+    }
     
     try {
         const payload = { email, domains };

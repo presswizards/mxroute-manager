@@ -11,6 +11,7 @@ from models.db import (
     load_domain_mapping,
 )
 from utils.auth_helpers import require_admin, get_current_user, clear_oidc_config_cache
+from utils.validators import validate_local_user_identifier
 from services.mxroute import mx_request, audit
 
 admin_bp = Blueprint("admin", __name__)
@@ -43,11 +44,16 @@ def update_delegation():
     password = data.get("password")
 
     if not email:
-        return jsonify({"success": False, "error": {"message": "Email is required"}}), 400
+        return jsonify({"success": False, "error": {"message": "User identifier is required"}}), 400
     if not isinstance(domains, list):
         return jsonify({"success": False, "error": {"message": "Domains list is required"}}), 400
 
     email = email.strip().lower()
+    if not validate_local_user_identifier(email):
+        return jsonify({
+            "success": False,
+            "error": {"message": "Invalid user identifier. Use a username (e.g. billy) or email address."},
+        }), 400
     normalized_domains = [d.strip().lower() for d in domains if d.strip()]
     is_admin = "*" in normalized_domains
 
@@ -114,9 +120,14 @@ def delete_delegation(email=None):
         email = body.get("email")
 
     if not email:
-        return jsonify({"success": False, "error": {"message": "Email parameter is required"}}), 400
+        return jsonify({"success": False, "error": {"message": "User identifier is required"}}), 400
 
     email = email.strip().lower()
+    if not validate_local_user_identifier(email):
+        return jsonify({
+            "success": False,
+            "error": {"message": "Invalid user identifier. Use a username (e.g. billy) or email address."},
+        }), 400
 
     current_user = get_current_user()
     if current_user and current_user.get("email", "").lower() == email:
