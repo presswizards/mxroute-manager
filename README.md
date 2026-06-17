@@ -5,8 +5,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Information!**
->
+> 
 > This app was 90% vibe coded with Cursor. It was to solve a particular annoyance I personally had with managing the domains I have with email services on MXroute. It was a way for me to learn more about JavaScript, Python and APIs. I got carried away, the AI kept pointing out my failures, and it turned into this.
 >
 > I fully understand that nobody in their right mind is going to trust this tool to manage their production email environment. This repo is more of a show and tell, in case anyone finds it useful or got annoyed of having to remember their MXroute login to reset their parents' email password.
@@ -222,9 +221,6 @@ docker run -d \
 | `FORCE_HTTPS` | No | Force secure cookies |
 | `PORT` | No | Local dev server port |
 
-## Project links
-- Repository: [github.com/t0msh/mxroute-manager](https://github.com/t0msh/mxroute-manager)
-- License: [MIT](LICENSE)
 
 ## License
 
