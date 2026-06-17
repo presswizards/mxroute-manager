@@ -3,6 +3,7 @@ let activeDomain = "";
 let activeDomainMailHosting = null;
 let accountQuota = null;
 let currentUser = null;
+let lastCreatedMailboxCredentials = null;
 
 function escapeHtml(value) {
     return String(value ?? "")
@@ -15,6 +16,11 @@ function escapeHtml(value) {
 
 function jsString(value) {
     return JSON.stringify(String(value ?? ""));
+}
+
+// JSON string safe for double-quoted HTML onclick attributes (jsString breaks nested quotes).
+function jsAttrString(value) {
+    return escapeHtml(JSON.stringify(String(value ?? "")));
 }
 
 function secureRandomInt(max) {
@@ -195,6 +201,42 @@ async function copyText(elementId) {
     } catch (err) {
         showAlert("error", "Failed to copy text.");
     }
+}
+
+async function copyMailboxCredentials() {
+    const creds = lastCreatedMailboxCredentials;
+    if (!creds?.email || !creds?.password) {
+        showAlert("warning", "No credentials to copy.");
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(formatMailboxCredentialsText(creds));
+        showAlert("success", "Mailbox credentials copied to clipboard!");
+    } catch (err) {
+        showAlert("error", "Failed to copy credentials.");
+    }
+}
+
+function formatMailboxCredentialsText(creds) {
+    return [
+        `Username (Email): ${creds.email}`,
+        `Password: ${creds.password}`,
+        `IMAP Hostname: ${creds.imapHost} (Port 993, SSL/TLS)`,
+        `SMTP Hostname: ${creds.smtpHost} (Port 465, SSL/TLS)`,
+        `Webmail Link: ${creds.webmailUrl}`,
+    ].join("\n");
+}
+
+function showMailboxCredentials(creds) {
+    lastCreatedMailboxCredentials = creds;
+    document.getElementById("out-email-addr").textContent = creds.email;
+    document.getElementById("out-email-pass").textContent = creds.password;
+    document.getElementById("out-imap-host").textContent = creds.imapHost;
+    document.getElementById("out-smtp-host").textContent = creds.smtpHost;
+    document.getElementById("out-webmail-url").textContent = creds.webmailUrl;
+    document.getElementById("credentials-output-card").style.display = "block";
+    document.getElementById("credentials-output-card").scrollIntoView({ behavior: "smooth" });
 }
 
 // Modal Toggle Helpers
@@ -463,8 +505,8 @@ async function loadDomainsList() {
                     <td id="domain-mail-${safeId}"><span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span></td>
                     <td id="domain-dns-${safeId}"><span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-secondary btn-sm" onclick="openDomainDnsSetup(${jsString(domain)})">Fix DNS</button>
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain(${jsString(domain)})">Delete</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openDomainDnsSetup(${jsAttrString(domain)})">Fix DNS</button>
+                        <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain(${jsAttrString(domain)})">Delete</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -877,7 +919,7 @@ async function loadPointersList(domain) {
                     <td><strong>${escapeHtml(pointer.pointer)}</strong></td>
                     <td><span class="badge" style="font-size:0.75rem; padding:0.1rem 0.4rem; background:rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius:4px;">${escapeHtml(pointer.type)}</span></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleDeletePointer(${jsString(pointer.pointer)})">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleDeletePointer(${jsAttrString(pointer.pointer)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1149,10 +1191,10 @@ async function loadEmailsList(domain) {
                     </td>
                     <td style="text-align: right;">
                         <div class="flex-row" style="justify-content: flex-end; gap: 0.5rem;">
-                            <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsString(account.username)})">🔑 Pass</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
-                            <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
-                            <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail(${jsString(account.username)})">🗑️ Delete</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsAttrString(account.username)})">🔑 Pass</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsAttrString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
+                            <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsAttrString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
+                            <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail(${jsAttrString(account.username)})">🗑️ Delete</button>
                         </div>
                     </td>
                 `;
@@ -1203,6 +1245,8 @@ document.getElementById("btn-generate-password").addEventListener("click", () =>
     showAlert("success", "Generated secure password. Visible for 5 seconds.");
 });
 
+document.getElementById("btn-copy-mailbox-credentials")?.addEventListener("click", copyMailboxCredentials);
+
 // Create Email Account Submit
 document.getElementById("form-create-email").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1231,14 +1275,13 @@ document.getElementById("form-create-email").addEventListener("submit", async (e
         });
         
         // Show Credentials card
-        document.getElementById("out-email-addr").textContent = `${username}@${activeDomain}`;
-        document.getElementById("out-email-pass").textContent = password;
-        document.getElementById("out-imap-host").textContent = `mail.${activeDomain}`;
-        document.getElementById("out-smtp-host").textContent = `mail.${activeDomain}`;
-        document.getElementById("out-webmail-url").textContent = `https://webmail.${activeDomain}`;
-        
-        document.getElementById("credentials-output-card").style.display = "block";
-        document.getElementById("credentials-output-card").scrollIntoView({ behavior: "smooth" });
+        showMailboxCredentials({
+            email: `${username}@${activeDomain}`,
+            password,
+            imapHost: `mail.${activeDomain}`,
+            smtpHost: `mail.${activeDomain}`,
+            webmailUrl: `https://webmail.${activeDomain}`,
+        });
         
         showAlert("success", `Mailbox ${username}@${activeDomain} created successfully!`);
         
@@ -1412,7 +1455,7 @@ async function loadForwardersList(domain) {
                     <td><strong>${escapeHtml(forwarder.alias)}@${escapeHtml(domain)}</strong></td>
                     <td>${destHtml}</td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder(${jsString(forwarder.alias)})">Remove</button>
+                        <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder(${jsAttrString(forwarder.alias)})">Remove</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1524,7 +1567,7 @@ async function loadSpamWhitelist(domain) {
                 tr.innerHTML = `
                     <td><strong>${escapeHtml(entry)}</strong></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('whitelist', ${jsString(entry)})">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('whitelist', ${jsAttrString(entry)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1569,7 +1612,7 @@ async function loadSpamBlacklist(domain) {
                 tr.innerHTML = `
                     <td><strong>${escapeHtml(entry)}</strong></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('blacklist', ${jsString(entry)})">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('blacklist', ${jsAttrString(entry)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
