@@ -8,18 +8,21 @@
                 user.</p>
             <form id="form-create-delegation">
                 <div class="form-group mb-4">
-                    <label for="delegation-email">User Email Address</label>
-                    <input type="email" id="delegation-email" placeholder="user@example.com" required>
+                    <label for="delegation-email">Username or Email</label>
+                    <input type="text" id="delegation-email" placeholder="billy, user@local, or user@example.com" required
+                        autocomplete="username" pattern="^[a-zA-Z0-9._%+-@]+$">
+                    <p class="stat-card-subtitle" style="margin-top: 0.5rem;">Use a short username for local sign-in, or an email address for OIDC users.</p>
                 </div>
                 <div class="form-group mb-4">
-                    <label for="delegation-password">Local Password (Optional)</label>
-                    <input type="password" id="delegation-password" placeholder="Leave blank to keep current / for OIDC users" autocomplete="new-password">
+                    <label for="delegation-password">Local Password <span id="delegation-password-required" style="display: none; color: var(--danger);">*</span></label>
+                    <input type="password" id="delegation-password" placeholder="Required for new local users" autocomplete="new-password">
+                    <p id="delegation-password-hint" class="stat-card-subtitle" style="margin-top: 0.5rem;">Required for new local users. Optional for OIDC email accounts or when editing an existing user.</p>
                 </div>
                 <div class="form-group mb-4">
-                    <label>Assigned Domains</label>
-                    <p class="stat-card-subtitle mb-2">Select the domains this user is allowed to manage:</p>
+                    <label>Domain Access Matrix</label>
+                    <p class="stat-card-subtitle mb-2">Admins have full access. For other users, enable each domain and choose the functions they may use. Mail hosting toggles remain admin-only.</p>
                     <div id="delegation-domains-checklist"
-                        style="background: rgba(0, 0, 0, 0.3); border: 1px solid var(--glass-border); border-radius: 10px; padding: 1rem; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem;">
+                        style="background: rgba(0, 0, 0, 0.3); border: 1px solid var(--glass-border); border-radius: 10px; padding: 1rem; max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem;">
                         <div style="color: var(--color-muted); font-size: 0.9rem;">Loading available domains...
                         </div>
                     </div>
@@ -35,8 +38,8 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>User Email</th>
-                            <th>Delegated Domains</th>
+                            <th>User</th>
+                            <th>Domain Permissions</th>
                             <th style="text-align: right;">Action</th>
                         </tr>
                     </thead>

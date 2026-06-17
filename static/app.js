@@ -3,7 +3,136 @@ let activeDomain = "";
 let activeDomainMailHosting = null;
 let accountQuota = null;
 let currentUser = null;
+let oidcEnabled = false;
+let knownDelegationUsers = new Set();
 let lastCreatedMailboxCredentials = null;
+let delegationPermissionCatalog = ["dashboard", "emails", "forwarders", "spam", "dns"];
+
+const DELEGATION_PERMISSION_LABELS = {
+    dashboard: "Dashboard",
+    emails: "Email Accounts",
+    forwarders: "Forwarders",
+    spam: "Spam Controls",
+    dns: "DNS Records",
+};
+
+const TAB_REQUIRED_PERMISSION = {
+    dashboard: "dashboard",
+    emails: "emails",
+    forwarders: "forwarders",
+    spam: "spam",
+};
+
+function userHasPermission(permission, domain = activeDomain) {
+    if (!currentUser) return false;
+    if (currentUser.is_admin) return true;
+    const grants = currentUser.domain_grants || {};
+    const domainKey = (domain || "").toLowerCase();
+    return (grants[domainKey] || []).includes(permission);
+}
+
+function userHasAnyPermission(permissions, domain = activeDomain) {
+    return permissions.some(permission => userHasPermission(permission, domain));
+}
+
+function getUserPermissionUnion() {
+    if (!currentUser || currentUser.is_admin) {
+        return new Set(delegationPermissionCatalog);
+    }
+    const union = new Set();
+    Object.values(currentUser.domain_grants || {}).forEach(perms => {
+        perms.forEach(permission => union.add(permission));
+    });
+    return union;
+}
+
+function tabVisibleForUser(tab) {
+    if (!currentUser || currentUser.is_admin) return true;
+    if (tab === "dashboard") {
+        const union = getUserPermissionUnion();
+        return union.has("dashboard") || union.has("dns");
+    }
+    const required = TAB_REQUIRED_PERMISSION[tab];
+    if (!required) return true;
+    return getUserPermissionUnion().has(required);
+}
+
+function activeTabAllowedForDomain() {
+    const activeTab = document.querySelector(".nav-item.active")?.getAttribute("data-tab");
+    if (!activeTab || !activeDomain) return true;
+    if (activeTab === "dashboard") {
+        return userHasAnyPermission(["dashboard", "dns"], activeDomain);
+    }
+    const required = TAB_REQUIRED_PERMISSION[activeTab];
+    return !required || userHasPermission(required, activeDomain);
+}
+
+function applyDashboardSectionVisibility() {
+    const statsGrid = document.querySelector("#tab-dashboard .stats-grid");
+    const quotaCard = document.getElementById("dash-quota-card");
+    const dnsHealthCard = document.getElementById("dns-health-card");
+    const dnsRecordsCard = document.getElementById("dns-records-card");
+    const mailToggle = document.getElementById("btn-toggle-mail-hosting");
+    const hasDashboard = userHasPermission("dashboard", activeDomain);
+    const hasDns = userHasPermission("dns", activeDomain);
+
+    if (statsGrid) statsGrid.style.display = hasDashboard ? "" : "none";
+    if (quotaCard) quotaCard.style.display = currentUser?.is_admin && hasDashboard ? "" : "none";
+    if (dnsHealthCard) dnsHealthCard.style.display = hasDashboard ? "" : "none";
+    if (dnsRecordsCard) dnsRecordsCard.style.display = (hasDashboard || hasDns) ? "" : "none";
+    if (mailToggle) mailToggle.style.display = currentUser?.is_admin ? "" : "none";
+}
+
+function applyUserPermissionsUI() {
+    if (!currentUser) return;
+
+    const navTabs = {
+        dashboard: document.querySelector('.nav-item[data-tab="dashboard"]'),
+        domains: document.getElementById("nav-tab-domains"),
+        emails: document.querySelector('.nav-item[data-tab="emails"]'),
+        forwarders: document.querySelector('.nav-item[data-tab="forwarders"]'),
+        spam: document.querySelector('.nav-item[data-tab="spam"]'),
+        delegations: document.getElementById("nav-tab-delegations"),
+        logs: document.getElementById("nav-tab-logs"),
+        settings: document.getElementById("nav-tab-settings"),
+    };
+
+    if (currentUser.is_admin) {
+        Object.values(navTabs).forEach(tab => {
+            if (tab) tab.style.display = tab.id === "nav-tab-delegations" || tab.id === "nav-tab-logs" ? "flex" : "";
+        });
+        document.getElementById("sidebar-quota-container").style.display = "";
+        document.getElementById("dash-quota-card").style.display = "";
+        applyDashboardSectionVisibility();
+        return;
+    }
+
+    document.getElementById("nav-tab-domains").style.display = "none";
+    document.getElementById("nav-tab-delegations").style.display = "none";
+    document.getElementById("nav-tab-logs").style.display = "none";
+    document.getElementById("sidebar-quota-container").style.display = "none";
+    document.getElementById("dash-quota-card").style.display = "none";
+
+    Object.entries(navTabs).forEach(([tab, el]) => {
+        if (!el || tab === "domains" || tab === "delegations" || tab === "logs") return;
+        el.style.display = tabVisibleForUser(tab) ? "" : "none";
+    });
+
+    applyDashboardSectionVisibility();
+    activateFirstAllowedTab();
+}
+
+function activateFirstAllowedTab() {
+    const activeTab = document.querySelector(".nav-item.active")?.getAttribute("data-tab");
+    if (activeTab && tabVisibleForUser(activeTab) && activeTabAllowedForDomain()) return;
+
+    const fallbackOrder = ["dashboard", "emails", "forwarders", "spam", "settings"];
+    const nextTab = fallbackOrder.find(tab => tabVisibleForUser(tab));
+    if (!nextTab) return;
+
+    const navItem = document.querySelector(`.nav-item[data-tab="${nextTab}"]`);
+    if (navItem) navItem.click();
+}
 
 function escapeHtml(value) {
     return String(value ?? "")
@@ -83,6 +212,137 @@ async function apiRequest(url, method = "GET", body = null) {
         console.error(`API Request failed on ${url}:`, err);
         throw err;
     }
+}
+
+// --- Data cache (stale-while-revalidate) ---
+const CACHE_TTL_MS = {
+    domains: 2 * 60 * 1000,
+    domainDetail: 60 * 1000,
+    dnsRecords: 5 * 60 * 1000,
+    dnsHealth: 3 * 60 * 1000,
+    quota: 90 * 1000,
+    list: 60 * 1000,
+};
+
+const apiCache = new Map();
+const domainRowCache = new Map();
+const backgroundRefreshes = new Map();
+
+function getCacheTtl(url) {
+    if (url === "/api/domains") return CACHE_TTL_MS.domains;
+    if (url === "/api/quota") return CACHE_TTL_MS.quota;
+    if (/\/dns\/health/.test(url) || /\/dns\/setup-health/.test(url)) return CACHE_TTL_MS.dnsHealth;
+    if (/\/dns$/.test(url.split("?")[0])) return CACHE_TTL_MS.dnsRecords;
+    if (/^\/api\/domains\/[^/]+$/.test(url.split("?")[0])) return CACHE_TTL_MS.domainDetail;
+    return CACHE_TTL_MS.list;
+}
+
+function isCacheFresh(url) {
+    const entry = apiCache.get(url);
+    if (!entry) return false;
+    return Date.now() - entry.fetchedAt < getCacheTtl(url);
+}
+
+function invalidateApiCache(urlPrefix) {
+    for (const key of [...apiCache.keys()]) {
+        if (key.startsWith(urlPrefix)) apiCache.delete(key);
+    }
+    if (urlPrefix === "/api/domains") domainRowCache.clear();
+}
+
+function invalidateDomainCache(domain) {
+    invalidateApiCache(`/api/domains/${domain}`);
+    invalidateApiCache(`/api/domains/${encodeURIComponent(domain)}`);
+    domainRowCache.delete(domain);
+}
+
+function setElementRefreshing(elOrId, refreshing) {
+    const el = typeof elOrId === "string" ? document.getElementById(elOrId) : elOrId;
+    if (!el) return;
+    el.classList.toggle("is-refreshing", refreshing);
+    let indicator = el.querySelector(".refresh-indicator");
+    if (refreshing) {
+        if (!indicator) {
+            indicator = document.createElement("span");
+            indicator.className = "refresh-indicator";
+            indicator.title = "Updating…";
+            const anchor = el.querySelector(".card-title") || el.querySelector(".stat-card-header") || el;
+            anchor.appendChild(indicator);
+        }
+    } else if (indicator) {
+        indicator.remove();
+    }
+}
+
+function setCellRefreshing(cellEl, refreshing) {
+    if (!cellEl) return;
+    cellEl.classList.toggle("is-refreshing", refreshing);
+    let indicator = cellEl.querySelector(".refresh-indicator");
+    if (refreshing) {
+        if (!indicator) {
+            indicator = document.createElement("span");
+            indicator.className = "refresh-indicator refresh-indicator-inline";
+            indicator.title = "Updating…";
+            cellEl.appendChild(indicator);
+        }
+    } else if (indicator) {
+        indicator.remove();
+    }
+}
+
+async function cachedFetch(url, options = {}) {
+    const { force = false, onRefreshStart, onRefreshEnd, onUpdated } = options;
+    const ttl = getCacheTtl(url);
+    const entry = apiCache.get(url);
+    const now = Date.now();
+
+    const storeAndReturn = (data) => {
+        apiCache.set(url, { data, fetchedAt: Date.now() });
+        return data;
+    };
+
+    if (entry && !force) {
+        const age = now - entry.fetchedAt;
+        if (age < ttl) {
+            return entry.data;
+        }
+
+        if (!backgroundRefreshes.has(url)) {
+            onRefreshStart?.();
+            const refreshPromise = apiRequest(url)
+                .then((data) => {
+                    storeAndReturn(data);
+                    onUpdated?.(data);
+                    return data;
+                })
+                .catch((err) => console.warn(`Background refresh failed for ${url}:`, err))
+                .finally(() => {
+                    backgroundRefreshes.delete(url);
+                    onRefreshEnd?.();
+                });
+            backgroundRefreshes.set(url, refreshPromise);
+        }
+        return entry.data;
+    }
+
+    onRefreshStart?.();
+    try {
+        const data = await apiRequest(url);
+        return storeAndReturn(data);
+    } finally {
+        onRefreshEnd?.();
+    }
+}
+
+function hasLoadedContent(el) {
+    if (!el) return false;
+    if (el.dataset.loaded === "true") return true;
+    if (el.id === "domains-list-tbody") return !!el.querySelector("tr[data-domain]");
+    if (el.id === "dns-health-checks") return el.children.length > 0;
+    if (el.id === "dns-mx-container") {
+        return !!el.querySelector(".copyable-code") || el.textContent.trim() !== "Loading DNS configuration...";
+    }
+    return el.textContent.trim() !== "" && el.textContent.trim() !== "--";
 }
 
 // Show Toast Alerts
@@ -321,7 +581,7 @@ document.querySelectorAll(".nav-item").forEach(item => {
         
         // Show/hide global domain selector (not needed on Domains, Access Control, or Settings pages)
         const domainSelector = document.getElementById("global-domain-selector");
-        if (tab === "domains" || tab === "delegations" || tab === "settings") {
+        if (tab === "domains" || tab === "delegations" || tab === "settings" || tab === "logs") {
             domainSelector.style.display = "none";
         } else {
             domainSelector.style.display = "";
@@ -335,61 +595,79 @@ document.querySelectorAll(".nav-item").forEach(item => {
             forwarders: { title: "Email Forwarders", subtitle: "Create forwarders to redirect messages to external addresses." },
             spam: { title: "Spam & Whitelist Controls", subtitle: "Configure SpamAssassin thresholds and manage list records." },
             delegations: { title: "Access Control", subtitle: "Delegate email domain management rights to specific users." },
+            logs: { title: "System Logs", subtitle: "View system actions, administrator operations, and authentication audits." },
             settings: { title: "Settings", subtitle: "Configure global system parameters, authentication methods, and user interface options." }
         };
         
         document.getElementById("page-title").textContent = titleMap[tab].title;
         document.getElementById("page-subtitle").textContent = titleMap[tab].subtitle;
         
-        // Reload page specific data
+        // Reload page specific data (uses cache when still fresh)
+        if (!activeTabAllowedForDomain()) {
+            showAlert("warning", "You do not have access to this section for the selected domain.");
+            activateFirstAllowedTab();
+            return;
+        }
         triggerDataRefresh();
     });
 });
 
 
 // --- 4. Main Data Refresher ---
-async function triggerDataRefresh() {
+async function triggerDataRefresh(options = {}) {
+    const { force = false } = options;
     const activeTab = document.querySelector(".nav-item.active").getAttribute("data-tab");
-    if (!activeDomain && activeTab !== "delegations" && activeTab !== "domains" && activeTab !== "settings") return;
+    if (!activeDomain && activeTab !== "delegations" && activeTab !== "domains" && activeTab !== "settings" && activeTab !== "logs") return;
     
     try {
         switch (activeTab) {
-            case "dashboard":
-                await Promise.all([
-                    loadAccountQuota(),
-                    loadDomainDetails(activeDomain),
-                    loadDNSInfo(activeDomain),
-                    loadDnsHealth(activeDomain)
-                ]);
+            case "dashboard": {
+                const tasks = [];
+                if (userHasPermission("dashboard", activeDomain)) {
+                    if (!currentUser || currentUser.is_admin) {
+                        tasks.push(loadAccountQuota({ force }));
+                    }
+                    tasks.push(loadDomainDetails(activeDomain, { force }));
+                    tasks.push(loadDnsHealth(activeDomain, { force }));
+                }
+                if (userHasAnyPermission(["dashboard", "dns"], activeDomain)) {
+                    tasks.push(loadDNSInfo(activeDomain, { force }));
+                }
+                applyDashboardSectionVisibility();
+                await Promise.all(tasks);
                 break;
+            }
             case "domains":
-                await loadDomainsList();
+                await loadDomainsList({ force });
                 break;
             case "emails":
                 // Set domain display labels
                 document.getElementById("create-email-domain-display").textContent = `@${activeDomain}`;
                 await Promise.all([
-                    loadEmailsList(activeDomain),
-                    checkDomainMailHostingStatus(activeDomain)
+                    loadEmailsList(activeDomain, { force }),
+                    checkDomainMailHostingStatus(activeDomain, { force })
                 ]);
                 break;
             case "forwarders":
                 document.getElementById("forwarder-domain-display").textContent = `@${activeDomain}`;
                 await Promise.all([
-                    loadForwardersList(activeDomain),
-                    loadCatchAll(activeDomain),
-                    loadPointersList(activeDomain),
-                    checkDomainMailHostingStatus(activeDomain)
+                    loadForwardersList(activeDomain, { force }),
+                    loadCatchAll(activeDomain, { force }),
+                    loadPointersList(activeDomain, { force }),
+                    checkDomainMailHostingStatus(activeDomain, { force })
                 ]);
                 break;
             case "spam":
                 await Promise.all([
-                    loadSpamSettings(activeDomain),
-                    checkDomainMailHostingStatus(activeDomain)
+                    loadSpamSettings(activeDomain, { force }),
+                    checkDomainMailHostingStatus(activeDomain, { force })
                 ]);
                 break;
             case "delegations":
-                await loadDelegationsPage();
+                await loadDelegationsPage({ force });
+                break;
+            case "logs":
+                await loadLogsPage();
                 break;
             case "settings":
                 await loadSettingsPage();
@@ -406,7 +684,7 @@ document.getElementById("btn-refresh-data").addEventListener("click", async () =
     refreshBtn.textContent = "⌛ Refreshing...";
     refreshBtn.disabled = true;
     try {
-        await triggerDataRefresh();
+        await triggerDataRefresh({ force: true });
         showAlert("success", "Data refreshed successfully.");
     } catch (e) {
         showAlert("error", "Refresh failed: " + e.message);
@@ -420,36 +698,56 @@ document.getElementById("btn-refresh-data").addEventListener("click", async () =
 // --- 5. Specific Feature Functions ---
 
 // 5.1 Storage Quotas
-async function loadAccountQuota() {
+async function loadAccountQuota({ force = false } = {}) {
     if (currentUser && !currentUser.is_admin) return;
-    try {
-        const result = await apiRequest("/api/quota");
-        if (result && result.success && result.data) {
-            const data = result.data;
-            accountQuota = data;
-            const limitGB = data.total_limit === 0 ? "Unlimited" : (data.total_limit / (1024 ** 3)).toFixed(1) + " GB";
-            const usedGB = (data.total_used / (1024 ** 3)).toFixed(2) + " GB";
-            const percent = data.percent_used.toFixed(1) + "%";
-            
-            // Update Sidebar
-            document.getElementById("sidebar-quota-text").textContent = `${usedGB} / ${limitGB}`;
-            const bar = document.getElementById("sidebar-quota-bar");
-            bar.style.width = percent;
-            bar.className = "quota-bar-fill";
-            if (data.percent_used > 80) bar.classList.add("warning");
-            if (data.percent_used > 95) bar.classList.add("danger");
-            
-            // Update Dashboard panel
-            document.getElementById("quota-used").textContent = usedGB;
-            document.getElementById("quota-limit").textContent = limitGB;
-            document.getElementById("quota-percentage").textContent = percent;
-            
-            if (data.grace_period) {
-                document.getElementById("quota-grace").innerHTML = `<span style="color: var(--danger);">Quota Exceeded! Deadline: ${escapeHtml(data.grace_period.deadline)}</span>`;
-            } else {
-                document.getElementById("quota-grace").textContent = "Compliant";
-            }
+    const card = document.getElementById("dash-quota-card");
+    const sidebar = document.getElementById("sidebar-quota-container");
+    const firstLoad = !hasLoadedContent(document.getElementById("quota-used"));
+
+    const renderQuota = (result) => {
+        if (!result?.success || !result.data) return;
+        const data = result.data;
+        accountQuota = data;
+        const limitGB = data.total_limit === 0 ? "Unlimited" : (data.total_limit / (1024 ** 3)).toFixed(1) + " GB";
+        const usedGB = (data.total_used / (1024 ** 3)).toFixed(2) + " GB";
+        const percent = data.percent_used.toFixed(1) + "%";
+
+        document.getElementById("sidebar-quota-text").textContent = `${usedGB} / ${limitGB}`;
+        const bar = document.getElementById("sidebar-quota-bar");
+        bar.style.width = percent;
+        bar.className = "quota-bar-fill";
+        if (data.percent_used > 80) bar.classList.add("warning");
+        if (data.percent_used > 95) bar.classList.add("danger");
+
+        document.getElementById("quota-used").textContent = usedGB;
+        document.getElementById("quota-limit").textContent = limitGB;
+        document.getElementById("quota-percentage").textContent = percent;
+        document.getElementById("quota-used").dataset.loaded = "true";
+
+        if (data.grace_period) {
+            document.getElementById("quota-grace").innerHTML = `<span style="color: var(--danger);">Quota Exceeded! Deadline: ${escapeHtml(data.grace_period.deadline)}</span>`;
+        } else {
+            document.getElementById("quota-grace").textContent = "Compliant";
         }
+    };
+
+    try {
+        const result = await cachedFetch("/api/quota", {
+            force,
+            onRefreshStart: () => {
+                setElementRefreshing(card, true);
+                setElementRefreshing(sidebar, true);
+            },
+            onRefreshEnd: () => {
+                setElementRefreshing(card, false);
+                setElementRefreshing(sidebar, false);
+            },
+            onUpdated: renderQuota,
+        });
+        if (firstLoad && !result?.success) {
+            document.getElementById("quota-used").textContent = "--";
+        }
+        renderQuota(result);
     } catch (err) {
         console.warn("Could not load account quotas:", err);
     }
@@ -491,95 +789,213 @@ function dnsNeedsFix(health) {
     return !!health && health.overall !== "healthy";
 }
 
-async function loadDomainsList() {
-    const tbody = document.getElementById("domains-list-tbody");
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Querying domains...</td></tr>';
+function applyDomainRowDetails(domain, detailsResult, healthResult) {
+    const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
+    const mailCell = document.getElementById(`domain-mail-${safeId}`);
+    const dnsCell = document.getElementById(`domain-dns-${safeId}`);
+    const fixDnsBtn = document.getElementById(`domain-fix-dns-${safeId}`);
+    if (!mailCell || !dnsCell) return;
+
+    let mailHtml = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
+    let dnsHtml = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
+    let fixDnsVisible = true;
+
+    if (detailsResult?.success && detailsResult.data) {
+        const mailOn = detailsResult.data.mail_hosting;
+        mailHtml = mailOn
+            ? `<span class="status-indicator success"><span class="dot"></span> Enabled</span>`
+            : `<span class="status-indicator danger"><span class="dot"></span> Disabled</span>`;
+    }
+
+    if (healthResult?.success && healthResult.data) {
+        const health = healthResult.data;
+        dnsHtml = renderDnsStatusBadge(health);
+        fixDnsVisible = dnsNeedsFix(health);
+    }
+
+    mailCell.innerHTML = mailHtml;
+    dnsCell.innerHTML = dnsHtml;
+    if (fixDnsBtn) fixDnsBtn.style.display = fixDnsVisible ? "inline-flex" : "none";
+
+    domainRowCache.set(domain, { mailHtml, dnsHtml, fixDnsVisible });
+}
+
+async function refreshDomainRowDetails(domain, { force = false } = {}) {
+    const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
+    const mailCell = document.getElementById(`domain-mail-${safeId}`);
+    const dnsCell = document.getElementById(`domain-dns-${safeId}`);
+    if (!mailCell || !dnsCell) return;
+
+    const detailsUrl = `/api/domains/${domain}`;
+    const healthUrl = `/api/domains/${encodeURIComponent(domain)}/dns/setup-health`;
+    const rowCached = domainRowCache.get(domain);
+
+    if (rowCached) {
+        mailCell.innerHTML = rowCached.mailHtml;
+        dnsCell.innerHTML = rowCached.dnsHtml;
+        const fixDnsBtn = document.getElementById(`domain-fix-dns-${safeId}`);
+        if (fixDnsBtn) fixDnsBtn.style.display = rowCached.fixDnsVisible ? "inline-flex" : "none";
+    }
+
+    const needsRefresh = force || !isCacheFresh(detailsUrl) || !isCacheFresh(healthUrl);
+    if (!needsRefresh) return;
+
+    const applyFromCache = () => {
+        const dEntry = apiCache.get(detailsUrl);
+        const hEntry = apiCache.get(healthUrl);
+        if (dEntry?.data || hEntry?.data) {
+            applyDomainRowDetails(domain, dEntry?.data, hEntry?.data);
+        }
+    };
 
     try {
-        const result = await apiRequest("/api/domains");
-        tbody.innerHTML = "";
-
-        if (result.success && result.data && result.data.length > 0) {
-            const rows = {};
-            result.data.forEach(domain => {
-                const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
-                const tr = document.createElement("tr");
-                tr.innerHTML = `
-                    <td><strong>${escapeHtml(domain)}</strong></td>
-                    <td id="domain-mail-${safeId}"><span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span></td>
-                    <td id="domain-dns-${safeId}"><span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span></td>
-                    <td style="text-align: right;">
-                        <button class="btn btn-secondary btn-sm" id="domain-fix-dns-${safeId}" style="display: none;" onclick="openDomainDnsSetup(${jsAttrString(domain)})">Fix DNS</button>
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain(${jsAttrString(domain)})">Delete</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-                rows[domain] = safeId;
-            });
-
-            await Promise.allSettled(result.data.map(async domain => {
-                const safeId = rows[domain];
-                const mailCell = document.getElementById(`domain-mail-${safeId}`);
-                const dnsCell = document.getElementById(`domain-dns-${safeId}`);
-                const fixDnsBtn = document.getElementById(`domain-fix-dns-${safeId}`);
-                if (!mailCell || !dnsCell) return;
-
-                const [detailsResult, healthResult] = await Promise.allSettled([
-                    apiRequest(`/api/domains/${domain}`),
-                    apiRequest(`/api/domains/${encodeURIComponent(domain)}/dns/setup-health`),
-                ]);
-
-                if (detailsResult.status === "fulfilled" && detailsResult.value.success && detailsResult.value.data) {
-                    const mailOn = detailsResult.value.data.mail_hosting;
-                    mailCell.innerHTML = mailOn
-                        ? `<span class="status-indicator success"><span class="dot"></span> Enabled</span>`
-                        : `<span class="status-indicator danger"><span class="dot"></span> Disabled</span>`;
-                } else {
-                    mailCell.innerHTML = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
-                }
-
-                if (healthResult.status === "fulfilled" && healthResult.value.success && healthResult.value.data) {
-                    const health = healthResult.value.data;
-                    dnsCell.innerHTML = renderDnsStatusBadge(health);
-                    if (fixDnsBtn) {
-                        fixDnsBtn.style.display = dnsNeedsFix(health) ? "inline-flex" : "none";
-                    }
-                } else {
-                    dnsCell.innerHTML = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
-                    if (fixDnsBtn) fixDnsBtn.style.display = "inline-flex";
-                }
-            }));
-        } else {
-            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No domains found on this account.</td></tr>';
-        }
+        await Promise.all([
+            cachedFetch(detailsUrl, {
+                force,
+                onRefreshStart: () => setCellRefreshing(mailCell, true),
+                onRefreshEnd: () => setCellRefreshing(mailCell, false),
+                onUpdated: applyFromCache,
+            }),
+            cachedFetch(healthUrl, {
+                force,
+                onRefreshStart: () => setCellRefreshing(dnsCell, true),
+                onRefreshEnd: () => setCellRefreshing(dnsCell, false),
+                onUpdated: applyFromCache,
+            }),
+        ]);
+        applyFromCache();
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); font-weight: 500;">Failed to load domains: ${escapeHtml(err.message)}</td></tr>`;
+        setCellRefreshing(mailCell, false);
+        setCellRefreshing(dnsCell, false);
+    }
+}
+
+function renderDomainsTableRows(domains) {
+    const tbody = document.getElementById("domains-list-tbody");
+    tbody.innerHTML = "";
+    domains.forEach(domain => {
+        const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
+        const cached = domainRowCache.get(domain);
+        const tr = document.createElement("tr");
+        tr.dataset.domain = domain;
+        tr.innerHTML = `
+            <td><strong>${escapeHtml(domain)}</strong></td>
+            <td id="domain-mail-${safeId}">${cached?.mailHtml || `<span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span>`}</td>
+            <td id="domain-dns-${safeId}">${cached?.dnsHtml || `<span style="color: var(--color-muted); font-size: 0.85rem;">⌛</span>`}</td>
+            <td style="text-align: right;">
+                <button class="btn btn-secondary btn-sm" id="domain-fix-dns-${safeId}" style="display: ${cached?.fixDnsVisible ? "inline-flex" : "none"};" onclick="openDomainDnsSetup(${jsAttrString(domain)})">Fix DNS</button>
+                <button class="btn btn-danger btn-sm" onclick="handleDeleteDomain(${jsAttrString(domain)})">Delete</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function loadDomainsList({ force = false } = {}) {
+    const tbody = document.getElementById("domains-list-tbody");
+    const card = document.getElementById("domains-list-card");
+    const hasRows = !!tbody.querySelector("tr[data-domain]");
+    const firstLoad = !hasRows;
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Querying domains...</td></tr>';
+    }
+
+    try {
+        const result = await cachedFetch("/api/domains", {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: (updated) => {
+                if (updated?.success && updated.data?.length) {
+                    const existing = [...tbody.querySelectorAll("tr[data-domain]")].map(r => r.dataset.domain);
+                    const sameList = existing.length === updated.data.length
+                        && updated.data.every(d => existing.includes(d));
+                    if (!sameList) renderDomainsTableRows(updated.data);
+                    updated.data.forEach(domain => refreshDomainRowDetails(domain, { force: true }));
+                }
+            },
+        });
+
+        if (!result.success || !result.data || result.data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No domains found on this account.</td></tr>';
+            return;
+        }
+
+        const domains = result.data;
+        const existingDomains = [...tbody.querySelectorAll("tr[data-domain]")].map(r => r.dataset.domain);
+        const sameList = hasRows
+            && existingDomains.length === domains.length
+            && domains.every(d => existingDomains.includes(d));
+
+        if (!sameList) {
+            renderDomainsTableRows(domains);
+        }
+
+        await Promise.allSettled(domains.map(domain => refreshDomainRowDetails(domain, { force })));
+    } catch (err) {
+        if (firstLoad || !hasRows) {
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); font-weight: 500;">Failed to load domains: ${escapeHtml(err.message)}</td></tr>`;
+        } else {
+            showAlert("error", `Failed to refresh domains: ${err.message}`);
+        }
     }
 }
 
 // 5.3 Domain Details (Dashboard Overview)
-async function loadDomainDetails(domain) {
-    try {
-        const result = await apiRequest(`/api/domains/${domain}`);
-        if (result.success && result.data) {
+async function loadDomainDetails(domain, { force = false } = {}) {
+    if (!domain) return;
+    const statsGrid = document.querySelector("#tab-dashboard .stats-grid");
+    const firstLoad = !hasLoadedContent(document.getElementById("dash-mailboxes-count"));
+
+    const renderDetails = (result, mailboxRes) => {
+        if (result?.success && result.data) {
             const data = result.data;
             activeDomainMailHosting = !!data.mail_hosting;
-            document.getElementById("dash-mail-status").innerHTML = data.mail_hosting ?
-                `<span class="status-indicator success"><span class="dot"></span> Enabled</span>` :
-                `<span class="status-indicator danger"><span class="dot"></span> Disabled</span>`;
-            
+            document.getElementById("dash-mail-status").innerHTML = data.mail_hosting
+                ? `<span class="status-indicator success"><span class="dot"></span> Enabled</span>`
+                : `<span class="status-indicator danger"><span class="dot"></span> Disabled</span>`;
             document.getElementById("dash-pointers-count").textContent = data.pointers ? data.pointers.length : 0;
+            document.getElementById("dash-mailboxes-count").dataset.loaded = "true";
         }
-        
-        // Fetch mailboxes count
-        const mailboxRes = await apiRequest(`/api/domains/${domain}/email-accounts`);
-        if (mailboxRes.success && mailboxRes.data) {
+
+        if (mailboxRes?.success && mailboxRes.data) {
             document.getElementById("dash-mailboxes-count").textContent = mailboxRes.data.length;
-        } else {
+        } else if (mailboxRes) {
             document.getElementById("dash-mailboxes-count").textContent = 0;
         }
+    };
+
+    try {
+        const detailsUrl = `/api/domains/${domain}`;
+        const mailboxesUrl = `/api/domains/${domain}/email-accounts`;
+
+        const result = await cachedFetch(detailsUrl, {
+            force,
+            onRefreshStart: () => setElementRefreshing(statsGrid, true),
+            onRefreshEnd: () => setElementRefreshing(statsGrid, false),
+            onUpdated: async (updated) => {
+                const mailboxRes = apiCache.get(mailboxesUrl)?.data
+                    || await cachedFetch(mailboxesUrl, { force: true });
+                renderDetails(updated, mailboxRes);
+            },
+        });
+
+        let mailboxRes = apiCache.get(mailboxesUrl)?.data;
+        const mailboxesFresh = isCacheFresh(mailboxesUrl);
+        if (!mailboxRes || force || !mailboxesFresh) {
+            mailboxRes = await cachedFetch(mailboxesUrl, {
+                force,
+                onRefreshStart: () => setElementRefreshing(statsGrid, true),
+                onRefreshEnd: () => setElementRefreshing(statsGrid, false),
+            });
+        }
+        renderDetails(result, mailboxRes);
     } catch (err) {
         console.warn("Could not load domain details:", err);
+        if (firstLoad) {
+            document.getElementById("dash-mailboxes-count").textContent = "--";
+        }
     }
 }
 
@@ -591,7 +1007,8 @@ document.getElementById("btn-toggle-mail-hosting").addEventListener("click", asy
     try {
         await apiRequest(`/api/domains/${activeDomain}/mail-status`, "PATCH", { enabled: nextState });
         showAlert("success", `Mail hosting status updated successfully.`);
-        await loadDomainDetails(activeDomain);
+        invalidateDomainCache(activeDomain);
+        await loadDomainDetails(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -752,7 +1169,8 @@ async function handleFixDnsRecord(recordType) {
             showAlert("info", "Record already exists or was not applicable.");
         }
         await loadSetupDnsHealth();
-        await loadDomainsList();
+        invalidateDomainCache(setupWizardDomain);
+        await loadDomainsList({ force: true });
     } catch (err) {
         if (err.steps) showSetupDnsProgress(err.steps, true);
         showAlert("error", err.message);
@@ -777,7 +1195,8 @@ async function handleFixAllDns() {
             showAlert("info", "No missing records to fix.");
         }
         await loadSetupDnsHealth();
-        await loadDomainsList();
+        invalidateDomainCache(setupWizardDomain);
+        await loadDomainsList({ force: true });
     } catch (err) {
         if (err.steps) showSetupDnsProgress(err.steps, true);
         showAlert("error", err.message);
@@ -875,8 +1294,9 @@ function initSetupWizard() {
         try {
             await apiRequest("/api/domains", "POST", { domain: setupWizardDomain });
             showAlert("success", `${setupWizardDomain} registered on MXroute. Return to Step 2 to add DKIM and mail DNS records.`);
+            invalidateApiCache("/api/domains");
             await initDomainDropdowns();
-            await loadDomainsList();
+            await loadDomainsList({ force: true });
             await updateSetupStep3State();
             document.getElementById("btn-setup-step3-dns").style.display = "inline-flex";
         } catch (err) {
@@ -906,7 +1326,9 @@ async function handleDeleteDomain(domain) {
     try {
         await apiRequest(`/api/domains/${domain}`, "DELETE");
         showAlert("success", `Domain "${domain}" deleted successfully.`);
-        await loadDomainsList();
+        invalidateApiCache("/api/domains");
+        invalidateDomainCache(domain);
+        await loadDomainsList({ force: true });
         await initDomainDropdowns();
     } catch (err) {
         showAlert("error", err.message);
@@ -914,17 +1336,17 @@ async function handleDeleteDomain(domain) {
 }
 
 // 5.4 Domain Pointers
-async function loadPointersList(domain) {
+async function loadPointersList(domain, { force = false } = {}) {
     const tbody = document.getElementById("pointers-tbody");
-    tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading pointers...</td></tr>';
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/pointers`);
+    const card = tbody?.closest(".glass-card");
+    const firstLoad = !tbody.querySelector("tr[data-pointer]");
+
+    const renderPointers = (result) => {
         tbody.innerHTML = "";
-        
-        if (result.success && result.data && result.data.length > 0) {
+        if (result?.success && result.data?.length > 0) {
             result.data.forEach(pointer => {
                 const tr = document.createElement("tr");
+                tr.dataset.pointer = pointer.pointer;
                 tr.innerHTML = `
                     <td><strong>${escapeHtml(pointer.pointer)}</strong></td>
                     <td><span class="badge" style="font-size:0.75rem; padding:0.1rem 0.4rem; background:rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius:4px;">${escapeHtml(pointer.type)}</span></td>
@@ -937,8 +1359,25 @@ async function loadPointersList(domain) {
         } else {
             tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No pointers configured</td></tr>';
         }
+    };
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading pointers...</td></tr>';
+    }
+
+    try {
+        const url = `/api/domains/${domain}/pointers`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderPointers,
+        });
+        renderPointers(result);
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load pointers</td></tr>`;
+        if (firstLoad) {
+            tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load pointers</td></tr>`;
+        }
     }
 }
 
@@ -962,8 +1401,10 @@ document.getElementById("form-modal-create-pointer").addEventListener("submit", 
         await apiRequest(`/api/domains/${activeDomain}/pointers`, "POST", { pointer, alias });
         showAlert("success", `Pointer "${pointer}" created successfully.`);
         closeModal("modal-add-pointer");
-        await loadPointersList(activeDomain);
-        await loadDomainDetails(activeDomain);
+        invalidateApiCache(`/api/domains/${activeDomain}/pointers`);
+        invalidateDomainCache(activeDomain);
+        await loadPointersList(activeDomain, { force: true });
+        await loadDomainDetails(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -980,22 +1421,24 @@ async function handleDeletePointer(pointer) {
     try {
         await apiRequest(`/api/domains/${activeDomain}/pointers/${pointer}`, "DELETE");
         showAlert("success", "Pointer deleted.");
-        await loadPointersList(activeDomain);
-        await loadDomainDetails(activeDomain);
+        invalidateApiCache(`/api/domains/${activeDomain}/pointers`);
+        invalidateDomainCache(activeDomain);
+        await loadPointersList(activeDomain, { force: true });
+        await loadDomainDetails(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
 }
 
 // 5.5 Catch-All Settings
-async function loadCatchAll(domain) {
+async function loadCatchAll(domain, { force = false } = {}) {
     const typeSelect = document.getElementById("catch-all-type");
     const addressGroup = document.getElementById("catch-all-address-group");
     const addressInput = document.getElementById("catch-all-address");
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/catch-all`);
-        if (result.success && result.data) {
+    const card = typeSelect?.closest(".glass-card");
+
+    const renderCatchAll = (result) => {
+        if (result?.success && result.data) {
             typeSelect.value = result.data.type;
             if (result.data.type === "address") {
                 addressGroup.style.display = "block";
@@ -1005,6 +1448,17 @@ async function loadCatchAll(domain) {
                 addressInput.value = "";
             }
         }
+    };
+
+    try {
+        const url = `/api/domains/${domain}/catch-all`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderCatchAll,
+        });
+        renderCatchAll(result);
     } catch (err) {
         console.warn("Could not load catch-all configuration:", err);
     }
@@ -1035,49 +1489,60 @@ document.getElementById("form-catch-all").addEventListener("submit", async (e) =
 });
 
 // 5.6 DNS Configuration Info
-async function loadDNSInfo(domain) {
+function renderDNSInfo(result) {
     const mxContainer = document.getElementById("dns-mx-container");
     const spfEl = document.getElementById("dns-spf");
     const dkimEl = document.getElementById("dns-dkim");
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/dns`);
-        if (result.success && result.data) {
-            const data = result.data;
-            
-            // Format MX Records
-            if (data.mx_records && data.mx_records.length > 0) {
-                mxContainer.innerHTML = "";
-                data.mx_records.forEach((mx, index) => {
-                    const rowId = `mx-rec-${index}`;
-                    const mxRow = document.createElement("div");
-                    mxRow.className = "copyable-code mb-2";
-                    mxRow.innerHTML = `
-                        <span><strong>Priority ${escapeHtml(mx.priority)}:</strong> <span id="${rowId}">${escapeHtml(mx.hostname)}</span></span>
-                        <button class="copy-btn" onclick="copyText('${rowId}')">Copy</button>
-                    `;
-                    mxContainer.appendChild(mxRow);
-                });
-            } else {
-                mxContainer.innerHTML = `<div style="color: var(--color-muted);">No MX records reported by API.</div>`;
-            }
-            
-            // SPF
-            spfEl.textContent = data.spf ? data.spf.value : "v=spf1 include:mxroute.com -all";
-            
-            // DKIM
-            dkimEl.textContent = data.dkim ? data.dkim.value : "No DKIM key available";
+    const dmarcEl = document.getElementById("dns-dmarc");
 
-            // DMARC
-            const dmarcEl = document.getElementById("dns-dmarc");
-            if (dmarcEl) {
-                dmarcEl.textContent = data.dmarc ? data.dmarc.value : "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;";
-            }
-        }
+    if (!result?.success || !result.data) return;
+
+    const data = result.data;
+
+    if (data.mx_records && data.mx_records.length > 0) {
+        mxContainer.innerHTML = "";
+        data.mx_records.forEach((mx, index) => {
+            const rowId = `mx-rec-${index}`;
+            const mxRow = document.createElement("div");
+            mxRow.className = "copyable-code mb-2";
+            mxRow.innerHTML = `
+                <span><strong>Priority ${escapeHtml(mx.priority)}:</strong> <span id="${rowId}">${escapeHtml(mx.hostname)}</span></span>
+                <button class="copy-btn" onclick="copyText('${rowId}')">Copy</button>
+            `;
+            mxContainer.appendChild(mxRow);
+        });
+    } else {
+        mxContainer.innerHTML = `<div style="color: var(--color-muted);">No MX records reported by API.</div>`;
+    }
+
+    spfEl.textContent = data.spf ? data.spf.value : "v=spf1 include:mxroute.com -all";
+    dkimEl.textContent = data.dkim ? data.dkim.value : "No DKIM key available";
+    if (dmarcEl) {
+        dmarcEl.textContent = data.dmarc ? data.dmarc.value : "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;";
+    }
+    mxContainer.dataset.loaded = "true";
+}
+
+async function loadDNSInfo(domain, { force = false } = {}) {
+    if (!domain) return;
+    const card = document.getElementById("dns-records-card");
+    const mxContainer = document.getElementById("dns-mx-container");
+    const firstLoad = !hasLoadedContent(mxContainer);
+
+    try {
+        const url = `/api/domains/${domain}/dns`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderDNSInfo,
+        });
+        renderDNSInfo(result);
     } catch (err) {
-        mxContainer.innerHTML = `<div style="color: var(--danger);">Failed to pull DNS info from MXroute.</div>`;
-        spfEl.textContent = "v=spf1 include:mxroute.com -all";
-        dkimEl.textContent = "Error loading DKIM key";
+        if (firstLoad) {
+            mxContainer.innerHTML = `<div style="color: var(--danger);">Failed to pull DNS info from MXroute.</div>`;
+            document.getElementById("dns-dkim").textContent = "Error loading DKIM key";
+        }
     }
 }
 
@@ -1103,130 +1568,168 @@ function updateDnsHealthHeader(health) {
     textEl.textContent = `${cfg.text}${mxrouteNote}`;
 }
 
-async function loadDnsHealth(domain) {
+function renderDnsHealth(health) {
+    const summaryEl = document.getElementById("dns-health-summary");
+    const checksEl = document.getElementById("dns-health-checks");
+    if (!health) return;
+
+    updateDnsHealthHeader(health);
+
+    if (summaryEl) {
+        const summaryMap = {
+            healthy: "All required DNS records look good in public DNS.",
+            degraded: "Mail may work, but some recommended records need attention.",
+            unhealthy: "Critical DNS records are missing or incorrect."
+        };
+        summaryEl.textContent = summaryMap[health.overall] || summaryMap.degraded;
+    }
+
+    if (checksEl) {
+        checksEl.innerHTML = "";
+        Object.values(health.checks || {}).forEach(check => {
+            const item = document.createElement("div");
+            item.className = `dns-health-item ${check.status}`;
+            const icon = check.status === "pass" ? "✅" : check.status === "pending" ? "⏳" : check.status === "skipped" ? "➖" : check.status === "warn" ? "⚠️" : "❌";
+            item.innerHTML = `
+                <div class="dns-health-item-title">${icon} ${escapeHtml(check.label)}</div>
+                <div class="dns-health-item-message">${escapeHtml(check.message)}</div>
+            `;
+            checksEl.appendChild(item);
+        });
+        checksEl.dataset.loaded = "true";
+    }
+}
+
+async function loadDnsHealth(domain, { force = false } = {}) {
     if (!domain) {
         updateDnsHealthHeader(null);
         return;
     }
 
-    const summaryEl = document.getElementById("dns-health-summary");
+    const card = document.getElementById("dns-health-card");
+    const headerStatus = document.getElementById("dns-health-status");
     const checksEl = document.getElementById("dns-health-checks");
+    const firstLoad = !hasLoadedContent(checksEl);
+    const url = `/api/domains/${encodeURIComponent(domain)}/dns/health`;
+
+    const onRefresh = (refreshing) => {
+        setElementRefreshing(card, refreshing);
+        setElementRefreshing(headerStatus, refreshing);
+    };
 
     try {
-        const result = await apiRequest(`/api/domains/${encodeURIComponent(domain)}/dns/health`);
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => onRefresh(true),
+            onRefreshEnd: () => onRefresh(false),
+            onUpdated: (updated) => {
+                if (updated?.success && updated.data) renderDnsHealth(updated.data);
+            },
+        });
+
         if (!result.success || !result.data) {
             throw new Error(result.error?.message || "Health check failed");
         }
-
-        const health = result.data;
-        updateDnsHealthHeader(health);
-
-        if (summaryEl) {
-            const summaryMap = {
-                healthy: "All required DNS records look good in public DNS.",
-                degraded: "Mail may work, but some recommended records need attention.",
-                unhealthy: "Critical DNS records are missing or incorrect."
-            };
-            summaryEl.textContent = summaryMap[health.overall] || summaryMap.degraded;
-        }
-
-        if (checksEl) {
-            checksEl.innerHTML = "";
-            Object.values(health.checks || {}).forEach(check => {
-                const item = document.createElement("div");
-                item.className = `dns-health-item ${check.status}`;
-                const icon = check.status === "pass" ? "✅" : check.status === "pending" ? "⏳" : check.status === "skipped" ? "➖" : check.status === "warn" ? "⚠️" : "❌";
-                item.innerHTML = `
-                    <div class="dns-health-item-title">${icon} ${escapeHtml(check.label)}</div>
-                    <div class="dns-health-item-message">${escapeHtml(check.message)}</div>
-                `;
-                checksEl.appendChild(item);
-            });
-        }
+        renderDnsHealth(result.data);
     } catch (err) {
-        updateDnsHealthHeader({ overall: "unhealthy", mxroute_reachable: false });
-        if (summaryEl) {
-            summaryEl.textContent = `DNS health check failed: ${err.message}`;
-        }
-        if (checksEl) {
-            checksEl.innerHTML = "";
+        if (firstLoad || force) {
+            updateDnsHealthHeader({ overall: "unhealthy", mxroute_reachable: false });
+            const summaryEl = document.getElementById("dns-health-summary");
+            if (summaryEl) summaryEl.textContent = `DNS health check failed: ${err.message}`;
+            if (checksEl && firstLoad) checksEl.innerHTML = "";
         }
     }
 }
 
 // 5.7 Email Accounts Management
-async function loadEmailsList(domain) {
+function renderEmailsList(result, domain) {
     const tbody = document.getElementById("emails-list-tbody");
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Querying mailboxes...</td></tr>';
-    
+    tbody.innerHTML = "";
+
+    if (result?.success && result.data?.length > 0) {
+        result.data.forEach(account => {
+            const tr = document.createElement("tr");
+            tr.dataset.username = account.username;
+
+            const quotaVal = account.quota === 0 ? "Unlimited" : `${account.quota} MB`;
+            const quotaPercent = account.quota === 0 ? 0 : Math.min(100, (account.usage / account.quota) * 100);
+            const quotaColor = quotaPercent > 90 ? "danger" : (quotaPercent > 75 ? "warning" : "");
+            const limitVal = account.limit;
+            const sentPercent = Math.min(100, (account.sent / account.limit) * 100);
+
+            tr.innerHTML = `
+                <td>
+                    <div style="font-weight: 600;">${escapeHtml(account.username)}@${escapeHtml(domain)}</div>
+                    ${account.suspended ? '<span style="font-size:0.75rem; color: var(--danger); font-weight:500;">🚫 Suspended</span>' : ''}
+                </td>
+                <td>
+                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
+                        <span>${escapeHtml(account.usage.toFixed(1))} MB used</span>
+                        <span>Limit: ${escapeHtml(quotaVal)}</span>
+                    </div>
+                    <div class="quota-bar" style="height: 4px;">
+                        <div class="quota-bar-fill ${quotaColor}" style="width: ${account.quota === 0 ? '1%' : quotaPercent + '%'}"></div>
+                    </div>
+                </td>
+                <td>
+                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
+                        <span>${escapeHtml(account.sent)} sent today</span>
+                        <span>Limit: ${escapeHtml(limitVal)}</span>
+                    </div>
+                    <div class="quota-bar" style="height: 4px;">
+                        <div class="quota-bar-fill" style="width: ${sentPercent}%; background: var(--accent);"></div>
+                    </div>
+                </td>
+                <td style="text-align: right;">
+                    <div class="flex-row" style="justify-content: flex-end; gap: 0.5rem;">
+                        <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsAttrString(account.username)})">🔑 Pass</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsAttrString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
+                        <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsAttrString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
+                        <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail(${jsAttrString(account.username)})">🗑️ Delete</button>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } else {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No mailboxes found for this domain.</td></tr>';
+    }
+    tbody.dataset.loaded = "true";
+}
+
+async function loadEmailsList(domain, { force = false } = {}) {
+    const tbody = document.getElementById("emails-list-tbody");
+    const card = tbody?.closest(".glass-card");
+    const firstLoad = !tbody.querySelector("tr[data-username]") && tbody.dataset.loaded !== "true";
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Querying mailboxes...</td></tr>';
+    }
+
     try {
-        const result = await apiRequest(`/api/domains/${domain}/email-accounts`);
-        tbody.innerHTML = "";
-        
-        if (result.success && result.data && result.data.length > 0) {
-            result.data.forEach(account => {
-                const tr = document.createElement("tr");
-                
-                // Formulate storage progress bar
-                const quotaVal = account.quota === 0 ? "Unlimited" : `${account.quota} MB`;
-                const quotaPercent = account.quota === 0 ? 0 : Math.min(100, (account.usage / account.quota) * 100);
-                const quotaColor = quotaPercent > 90 ? "danger" : (quotaPercent > 75 ? "warning" : "");
-                
-                // Outbound limits progress
-                const limitVal = account.limit;
-                const sentPercent = Math.min(100, (account.sent / account.limit) * 100);
-                
-                tr.innerHTML = `
-                    <td>
-                        <div style="font-weight: 600;">${escapeHtml(account.username)}@${escapeHtml(domain)}</div>
-                        ${account.suspended ? '<span style="font-size:0.75rem; color: var(--danger); font-weight:500;">🚫 Suspended</span>' : ''}
-                    </td>
-                    <td>
-                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
-                            <span>${escapeHtml(account.usage.toFixed(1))} MB used</span>
-                            <span>Limit: ${escapeHtml(quotaVal)}</span>
-                        </div>
-                        <div class="quota-bar" style="height: 4px;">
-                            <div class="quota-bar-fill ${quotaColor}" style="width: ${account.quota === 0 ? '1%' : quotaPercent + '%'}"></div>
-                        </div>
-                    </td>
-                    <td>
-                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
-                            <span>${escapeHtml(account.sent)} sent today</span>
-                            <span>Limit: ${escapeHtml(limitVal)}</span>
-                        </div>
-                        <div class="quota-bar" style="height: 4px;">
-                            <div class="quota-bar-fill" style="width: ${sentPercent}%; background: var(--accent);"></div>
-                        </div>
-                    </td>
-                    <td style="text-align: right;">
-                        <div class="flex-row" style="justify-content: flex-end; gap: 0.5rem;">
-                            <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsAttrString(account.username)})">🔑 Pass</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsAttrString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
-                            <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsAttrString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
-                            <button class="btn btn-danger btn-sm" onclick="handleDeleteEmail(${jsAttrString(account.username)})">🗑️ Delete</button>
-                        </div>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } else {
-            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No mailboxes found for this domain.</td></tr>';
-        }
+        const url = `/api/domains/${domain}/email-accounts`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: (updated) => renderEmailsList(updated, domain),
+        });
+        renderEmailsList(result, domain);
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`;
+        if (firstLoad) {
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`;
+        }
     }
 }
 
 // Check if domain has mail hosting enabled and update the UI overlay
-async function checkDomainMailHostingStatus(domain) {
+async function checkDomainMailHostingStatus(domain, { force = false } = {}) {
     const emailOverlay = document.getElementById("email-hosting-disabled-overlay");
     const forwardersOverlay = document.getElementById("forwarders-hosting-disabled-overlay");
     const spamOverlay = document.getElementById("spam-hosting-disabled-overlay");
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}`);
-        if (result.success && result.data) {
+
+    const applyHosting = (result) => {
+        if (result?.success && result.data) {
             const displayMode = result.data.mail_hosting ? "none" : "flex";
             if (emailOverlay) emailOverlay.style.display = displayMode;
             if (forwardersOverlay) forwardersOverlay.style.display = displayMode;
@@ -1236,6 +1739,12 @@ async function checkDomainMailHostingStatus(domain) {
             if (forwardersOverlay) forwardersOverlay.style.display = "none";
             if (spamOverlay) spamOverlay.style.display = "none";
         }
+    };
+
+    try {
+        const url = `/api/domains/${domain}`;
+        const result = await cachedFetch(url, { force, onUpdated: applyHosting });
+        applyHosting(result);
     } catch (err) {
         console.warn("Could not check domain mail hosting status:", err);
         if (emailOverlay) emailOverlay.style.display = "none";
@@ -1309,8 +1818,8 @@ document.getElementById("form-create-email").addEventListener("submit", async (e
             li.innerHTML = `✖ ${li.textContent.slice(2)}`;
         });
         
-        await loadEmailsList(activeDomain);
-        await loadAccountQuota();
+        await loadEmailsList(activeDomain, { force: true });
+        await loadAccountQuota({ force: true });
     } catch (err) {
         showAlert("error", err.message);
     } finally {
@@ -1344,8 +1853,8 @@ async function handleDeleteEmail(username) {
     try {
         await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}`, "DELETE");
         showAlert("success", `Mailbox ${username}@${activeDomain} deleted.`);
-        await loadEmailsList(activeDomain);
-        await loadAccountQuota();
+        await loadEmailsList(activeDomain, { force: true });
+        await loadAccountQuota({ force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1367,7 +1876,7 @@ async function handleToggleSuspend(username, isSuspended) {
     try {
         await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}`, "PATCH", { suspended: !suspended });
         showAlert("success", `Mailbox ${username}@${activeDomain} ${actionText}d successfully.`);
-        await loadEmailsList(activeDomain);
+        await loadEmailsList(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1440,7 +1949,7 @@ document.getElementById("form-modal-update-quota").addEventListener("submit", as
         await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}`, "PATCH", { quota, limit });
         showAlert("success", `Resource parameters updated for ${username}@${activeDomain}`);
         closeModal("modal-update-quota");
-        await loadEmailsList(activeDomain);
+        await loadEmailsList(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1448,33 +1957,53 @@ document.getElementById("form-modal-update-quota").addEventListener("submit", as
 
 
 // 5.8 Forwarders Management
-async function loadForwardersList(domain) {
+function renderForwardersList(result, domain) {
     const tbody = document.getElementById("forwarders-list-tbody");
-    tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading forwarders...</td></tr>';
-    
+    tbody.innerHTML = "";
+
+    if (result?.success && result.data?.length > 0) {
+        result.data.forEach(forwarder => {
+            const tr = document.createElement("tr");
+            tr.dataset.alias = forwarder.alias;
+            const destHtml = forwarder.destinations.map(d => `<div style="font-size:0.85rem; color:var(--color-secondary);">${escapeHtml(d)}</div>`).join("");
+
+            tr.innerHTML = `
+                <td><strong>${escapeHtml(forwarder.alias)}@${escapeHtml(domain)}</strong></td>
+                <td>${destHtml}</td>
+                <td style="text-align: right;">
+                    <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder(${jsAttrString(forwarder.alias)})">Remove</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } else {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No forwarders active for this domain.</td></tr>';
+    }
+    tbody.dataset.loaded = "true";
+}
+
+async function loadForwardersList(domain, { force = false } = {}) {
+    const tbody = document.getElementById("forwarders-list-tbody");
+    const card = tbody?.closest(".glass-card");
+    const firstLoad = !tbody.querySelector("tr[data-alias]") && tbody.dataset.loaded !== "true";
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading forwarders...</td></tr>';
+    }
+
     try {
-        const result = await apiRequest(`/api/domains/${domain}/forwarders`);
-        tbody.innerHTML = "";
-        
-        if (result.success && result.data && result.data.length > 0) {
-            result.data.forEach(forwarder => {
-                const tr = document.createElement("tr");
-                const destHtml = forwarder.destinations.map(d => `<div style="font-size:0.85rem; color:var(--color-secondary);">${escapeHtml(d)}</div>`).join('');
-                
-                tr.innerHTML = `
-                    <td><strong>${escapeHtml(forwarder.alias)}@${escapeHtml(domain)}</strong></td>
-                    <td>${destHtml}</td>
-                    <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm" onclick="handleDeleteForwarder(${jsAttrString(forwarder.alias)})">Remove</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } else {
-            tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No forwarders active for this domain.</td></tr>';
-        }
+        const url = `/api/domains/${domain}/forwarders`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: (updated) => renderForwardersList(updated, domain),
+        });
+        renderForwardersList(result, domain);
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${escapeHtml(err.message)}</td></tr>`;
+        if (firstLoad) {
+            tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${escapeHtml(err.message)}</td></tr>`;
+        }
     }
 }
 
@@ -1494,7 +2023,7 @@ document.getElementById("form-create-forwarder").addEventListener("submit", asyn
         showAlert("success", `Forwarder for ${alias}@${activeDomain} created!`);
         aliasInput.value = "";
         destsInput.value = "";
-        await loadForwardersList(activeDomain);
+        await loadForwardersList(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1514,7 +2043,7 @@ async function handleDeleteForwarder(alias) {
     try {
         await apiRequest(`/api/domains/${activeDomain}/forwarders/${alias}`, "DELETE");
         showAlert("success", `Forwarder ${alias}@${activeDomain} deleted.`);
-        await loadForwardersList(activeDomain);
+        await loadForwardersList(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1522,25 +2051,35 @@ async function handleDeleteForwarder(alias) {
 
 
 // 5.9 Spam Control Panel
-async function loadSpamSettings(domain) {
+async function loadSpamSettings(domain, { force = false } = {}) {
     const scoreSlider = document.getElementById("spam-high-score");
     const scoreLbl = document.getElementById("spam-high-score-val");
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/spam/settings`);
-        if (result.success && result.data) {
+    const card = scoreSlider?.closest(".glass-card");
+
+    const renderSettings = (result) => {
+        if (result?.success && result.data) {
             const score = result.data.high_score;
             scoreSlider.value = score;
             scoreLbl.textContent = score;
         }
+    };
+
+    try {
+        const url = `/api/domains/${domain}/spam/settings`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderSettings,
+        });
+        renderSettings(result);
     } catch (err) {
         console.warn("Could not load spam settings:", err);
     }
-    
-    // Load Whitelist & Blacklist
+
     await Promise.all([
-        loadSpamWhitelist(domain),
-        loadSpamBlacklist(domain)
+        loadSpamWhitelist(domain, { force }),
+        loadSpamBlacklist(domain, { force }),
     ]);
 }
 
@@ -1563,15 +2102,14 @@ document.getElementById("form-spam-settings").addEventListener("submit", async (
 });
 
 // Whitelist loader
-async function loadSpamWhitelist(domain) {
+async function loadSpamWhitelist(domain, { force = false } = {}) {
     const tbody = document.getElementById("whitelist-tbody");
-    tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading whitelist...</td></tr>';
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/spam/whitelist`);
+    const card = tbody?.closest(".glass-card");
+    const firstLoad = !tbody.dataset.loaded;
+
+    const renderWhitelist = (result) => {
         tbody.innerHTML = "";
-        
-        if (result.success && result.data && result.data.length > 0) {
+        if (result?.success && result.data?.length > 0) {
             result.data.forEach(entry => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
@@ -1585,8 +2123,26 @@ async function loadSpamWhitelist(domain) {
         } else {
             tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">No whitelist entries</td></tr>';
         }
+        tbody.dataset.loaded = "true";
+    };
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading whitelist...</td></tr>';
+    }
+
+    try {
+        const url = `/api/domains/${domain}/spam/whitelist`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderWhitelist,
+        });
+        renderWhitelist(result);
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading whitelist</td></tr>';
+        if (firstLoad) {
+            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading whitelist</td></tr>';
+        }
     }
 }
 
@@ -1601,22 +2157,21 @@ document.getElementById("form-whitelist-add").addEventListener("submit", async (
         await apiRequest(`/api/domains/${activeDomain}/spam/whitelist`, "POST", { entry });
         showAlert("success", `Added "${entry}" to whitelist.`);
         entryInput.value = "";
-        await loadSpamWhitelist(activeDomain);
+        await loadSpamWhitelist(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
 });
 
 // Blacklist loader
-async function loadSpamBlacklist(domain) {
+async function loadSpamBlacklist(domain, { force = false } = {}) {
     const tbody = document.getElementById("blacklist-tbody");
-    tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading blacklist...</td></tr>';
-    
-    try {
-        const result = await apiRequest(`/api/domains/${domain}/spam/blacklist`);
+    const card = tbody?.closest(".glass-card");
+    const firstLoad = !tbody.dataset.loaded;
+
+    const renderBlacklist = (result) => {
         tbody.innerHTML = "";
-        
-        if (result.success && result.data && result.data.length > 0) {
+        if (result?.success && result.data?.length > 0) {
             result.data.forEach(entry => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
@@ -1630,8 +2185,26 @@ async function loadSpamBlacklist(domain) {
         } else {
             tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">No blacklist entries</td></tr>';
         }
+        tbody.dataset.loaded = "true";
+    };
+
+    if (firstLoad) {
+        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading blacklist...</td></tr>';
+    }
+
+    try {
+        const url = `/api/domains/${domain}/spam/blacklist`;
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: renderBlacklist,
+        });
+        renderBlacklist(result);
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading blacklist</td></tr>';
+        if (firstLoad) {
+            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading blacklist</td></tr>';
+        }
     }
 }
 
@@ -1646,7 +2219,7 @@ document.getElementById("form-blacklist-add").addEventListener("submit", async (
         await apiRequest(`/api/domains/${activeDomain}/spam/blacklist`, "POST", { entry });
         showAlert("success", `Added "${entry}" to blacklist.`);
         entryInput.value = "";
-        await loadSpamBlacklist(activeDomain);
+        await loadSpamBlacklist(activeDomain, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -1666,9 +2239,9 @@ async function handleRemoveSpamList(type, entry) {
         await apiRequest(`/api/domains/${activeDomain}/spam/${type}/${encodedEntry}`, "DELETE");
         showAlert("success", `Removed "${entry}" from ${type}.`);
         if (type === "whitelist") {
-            await loadSpamWhitelist(activeDomain);
+            await loadSpamWhitelist(activeDomain, { force: true });
         } else {
-            await loadSpamBlacklist(activeDomain);
+            await loadSpamBlacklist(activeDomain, { force: true });
         }
     } catch (err) {
         showAlert("error", err.message);
@@ -1681,7 +2254,7 @@ async function initDomainDropdowns() {
     const select = document.getElementById("global-domain-select");
     
     try {
-        const result = await apiRequest("/api/domains");
+        const result = await cachedFetch("/api/domains");
         select.innerHTML = "";
         
         if (result.success && result.data && result.data.length > 0) {
@@ -1698,8 +2271,7 @@ async function initDomainDropdowns() {
             }
             select.value = activeDomain;
             
-            await loadDnsHealth(activeDomain);
-            // Load initial page data
+            // Load initial page data (cached when still fresh)
             await triggerDataRefresh();
         } else {
             const option = document.createElement("option");
@@ -1725,11 +2297,63 @@ async function initDomainDropdowns() {
 // Dropdown Change Handler
 document.getElementById("global-domain-select").addEventListener("change", async (e) => {
     activeDomain = e.target.value;
-    await loadDnsHealth(activeDomain);
+    applyDashboardSectionVisibility();
+    if (userHasPermission("dashboard", activeDomain)) {
+        await loadDnsHealth(activeDomain);
+    }
+    if (!activeTabAllowedForDomain()) {
+        showAlert("warning", "You do not have access to this section for the selected domain.");
+        activateFirstAllowedTab();
+        return;
+    }
     await triggerDataRefresh();
 });
 
 // 5.8 Access Control & Delegations UI handlers
+function validateLocalUserIdentifier(identifier) {
+    if (/^[a-zA-Z0-9._-]+$/.test(identifier)) return true;
+    if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(identifier)) return true;
+    if (/^[a-zA-Z0-9._-]+@[a-zA-Z0-9-]+$/.test(identifier)) return true;
+    return false;
+}
+
+function isLocalLoginUser(identifier) {
+    const isPlainUsername = /^[a-zA-Z0-9._-]+$/.test(identifier);
+    if (isPlainUsername) return true;
+    const isStrictEmail = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(identifier);
+    if (isStrictEmail && oidcEnabled) return false;
+    return true;
+}
+
+function delegationPasswordRequired(identifier) {
+    if (!isLocalLoginUser(identifier)) return false;
+    return !knownDelegationUsers.has(identifier.toLowerCase());
+}
+
+function updateDelegationPasswordHint() {
+    const emailInput = document.getElementById("delegation-email");
+    const passInput = document.getElementById("delegation-password");
+    const requiredMarker = document.getElementById("delegation-password-required");
+    const hint = document.getElementById("delegation-password-hint");
+    if (!emailInput || !passInput || !requiredMarker || !hint) return;
+
+    const identifier = emailInput.value.trim().toLowerCase();
+    const required = identifier && delegationPasswordRequired(identifier);
+
+    requiredMarker.style.display = required ? "inline" : "none";
+    passInput.required = required;
+
+    if (!identifier) {
+        hint.textContent = "Required for new local users. Optional for OIDC email accounts or when editing an existing user.";
+    } else if (required) {
+        hint.textContent = "A password is required because this user signs in locally.";
+    } else if (isLocalLoginUser(identifier)) {
+        hint.textContent = "Leave blank to keep the current password for this local user.";
+    } else {
+        hint.textContent = "Optional for OIDC users who sign in through your identity provider.";
+    }
+}
+
 async function loadDelegationsPage() {
     const listBody = document.getElementById("delegations-list-tbody");
     listBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Querying access delegations...</td></tr>';
@@ -1738,79 +2362,80 @@ async function loadDelegationsPage() {
     checklist.innerHTML = '<div style="color: var(--color-muted); font-size: 0.9rem;">Loading available domains...</div>';
     
     try {
-        // Fetch all domains from backend for the checkboxes
-        const domainsRes = await apiRequest("/api/domains");
+        const [domainsRes, delegationsRes] = await Promise.all([
+            apiRequest("/api/domains"),
+            apiRequest("/api/admin/delegations"),
+        ]);
+
+        if (delegationsRes?.permissions?.length) {
+            delegationPermissionCatalog = delegationsRes.permissions;
+        }
+
         if (domainsRes.success && domainsRes.data) {
             checklist.innerHTML = "";
-            
-            // Add static "*" (All Domains / Admin Access) option at the top
-            const adminLabel = document.createElement("label");
-            adminLabel.className = "flex-row align-center";
-            adminLabel.style.cursor = "pointer";
-            adminLabel.style.fontSize = "0.9rem";
-            adminLabel.style.color = "var(--accent)";
-            adminLabel.style.fontWeight = "600";
-            adminLabel.innerHTML = `
-                <input type="checkbox" name="delegated-domain-cb" value="*" style="width: auto; height: auto; margin: 0;">
-                <span>⭐ Admin</span>
+
+            const adminRow = document.createElement("label");
+            adminRow.className = "delegation-admin-option flex-row align-center";
+            adminRow.innerHTML = `
+                <input type="checkbox" id="delegation-admin-cb" name="delegated-domain-cb" value="*" style="width: auto; height: auto; margin: 0;">
+                <span>Admin (full access to all domains and settings)</span>
             `;
-            checklist.appendChild(adminLabel);
-            
+            checklist.appendChild(adminRow);
+
+            const matrix = document.createElement("div");
+            matrix.id = "delegation-permissions-matrix";
+            matrix.className = "delegation-permissions-matrix";
+
             if (domainsRes.data.length > 0) {
                 domainsRes.data.forEach(domain => {
-                    const label = document.createElement("label");
-                    label.className = "flex-row align-center";
-                    label.style.cursor = "pointer";
-                    label.style.fontSize = "0.9rem";
-                    const checkbox = document.createElement("input");
-                    checkbox.type = "checkbox";
-                    checkbox.name = "delegated-domain-cb";
-                    checkbox.value = domain;
-                    checkbox.style.width = "auto";
-                    checkbox.style.height = "auto";
-                    checkbox.style.margin = "0";
-                    const span = document.createElement("span");
-                    span.textContent = domain;
-                    label.appendChild(checkbox);
-                    label.appendChild(span);
-                    checklist.appendChild(label);
+                    matrix.appendChild(createDelegationDomainRow(domain));
                 });
+            } else {
+                matrix.innerHTML = '<div style="color: var(--color-muted); font-size: 0.9rem;">No domains available yet.</div>';
             }
+            checklist.appendChild(matrix);
+
+            document.getElementById("delegation-admin-cb").addEventListener("change", (event) => {
+                matrix.style.display = event.target.checked ? "none" : "flex";
+            });
         }
         
-        // Fetch delegations list
-        const delegationsRes = await apiRequest("/api/admin/delegations");
         listBody.innerHTML = "";
-        
+        knownDelegationUsers = new Set();
+
         if (delegationsRes.success && delegationsRes.data && delegationsRes.data.length > 0) {
             delegationsRes.data.forEach(item => {
+                knownDelegationUsers.add(item.email.toLowerCase());
                 const tr = document.createElement("tr");
                 
-                // Format domains display
                 let domainsStr = "";
-                if (item.domains.includes("*")) {
-                    domainsStr = '<span style="color: var(--accent); font-weight: 600;">⭐ Admin</span>';
+                if (item.is_admin || item.domains.includes("*")) {
+                    domainsStr = '<span style="color: var(--accent); font-weight: 600;">Admin</span>';
+                } else if (item.grants && item.grants.length > 0) {
+                    domainsStr = item.grants.map(grant => {
+                        const labels = (grant.permissions || [])
+                            .map(perm => DELEGATION_PERMISSION_LABELS[perm] || perm)
+                            .join(", ");
+                        return `<div><strong>${escapeHtml(grant.domain)}</strong><br><span style="color: var(--color-secondary); font-size: 0.8rem;">${escapeHtml(labels || "No permissions")}</span></div>`;
+                    }).join('<div style="margin-top: 0.5rem;"></div>');
                 } else if (item.domains.length > 0) {
-                    domainsStr = item.domains.map(escapeHtml).join(", ");
+                    domainsStr = item.domains.filter(d => d !== "*").map(escapeHtml).join(", ");
                 } else {
                     domainsStr = '<span style="color: var(--color-muted); font-style: italic;">None</span>';
                 }
                 
-                // 1. Email Cell
                 const emailTd = document.createElement("td");
                 const emailStrong = document.createElement("strong");
                 emailStrong.textContent = item.email;
                 emailTd.appendChild(emailStrong);
                 tr.appendChild(emailTd);
                 
-                // 2. Domains Cell
                 const domainsTd = document.createElement("td");
-                domainsTd.style.maxWidth = "300px";
-                domainsTd.style.wordBreak = "break-all";
+                domainsTd.style.maxWidth = "360px";
+                domainsTd.style.wordBreak = "break-word";
                 domainsTd.innerHTML = domainsStr;
                 tr.appendChild(domainsTd);
                 
-                // 3. Action Cell
                 const actionTd = document.createElement("td");
                 actionTd.style.textAlign = "right";
                 
@@ -1819,16 +2444,14 @@ async function loadDelegationsPage() {
                 wrapper.style.justifyContent = "flex-end";
                 wrapper.style.gap = "0.5rem";
                 
-                // Edit Button
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-secondary btn-sm";
                 editBtn.innerHTML = "⚙️ Edit";
                 editBtn.addEventListener("click", () => {
-                    handleEditDelegation(item.email, item.domains);
+                    handleEditDelegation(item.email, item.grants || [], item.is_admin || item.domains.includes("*"));
                 });
                 wrapper.appendChild(editBtn);
                 
-                // Revoke Button
                 const revokeBtn = document.createElement("button");
                 revokeBtn.className = "btn btn-danger btn-sm";
                 revokeBtn.innerHTML = "Revoke";
@@ -1846,26 +2469,97 @@ async function loadDelegationsPage() {
                 
                 actionTd.appendChild(wrapper);
                 tr.appendChild(actionTd);
-                
                 listBody.appendChild(tr);
             });
         } else {
             listBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">No delegations configured yet.</td></tr>';
         }
+        updateDelegationPasswordHint();
     } catch (err) {
         listBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load delegations: ${escapeHtml(err.message)}</td></tr>`;
         checklist.innerHTML = `<div style="color: var(--danger); font-size: 0.9rem;">Failed to load domains: ${escapeHtml(err.message)}</div>`;
     }
 }
 
-function handleEditDelegation(email, domains) {
+function createDelegationDomainRow(domain) {
+    const row = document.createElement("div");
+    row.className = "delegation-domain-row";
+    row.dataset.domain = domain;
+
+    const permissionMarkup = delegationPermissionCatalog.map(permission => `
+        <label class="delegation-permission-option">
+            <input type="checkbox" class="delegation-permission-cb" value="${escapeHtml(permission)}" checked>
+            <span>${escapeHtml(DELEGATION_PERMISSION_LABELS[permission] || permission)}</span>
+        </label>
+    `).join("");
+
+    row.innerHTML = `
+        <label class="delegation-domain-toggle flex-row align-center">
+            <input type="checkbox" class="delegation-domain-enable" value="${escapeHtml(domain)}" style="width: auto; height: auto; margin: 0;">
+            <strong>${escapeHtml(domain)}</strong>
+        </label>
+        <div class="delegation-permission-grid">${permissionMarkup}</div>
+    `;
+
+    const enableCb = row.querySelector(".delegation-domain-enable");
+    const permissionGrid = row.querySelector(".delegation-permission-grid");
+    enableCb.addEventListener("change", () => {
+        permissionGrid.style.display = enableCb.checked ? "grid" : "none";
+    });
+    permissionGrid.style.display = "none";
+    return row;
+}
+
+function collectDelegationGrants() {
+    const grants = [];
+    document.querySelectorAll(".delegation-domain-row").forEach(row => {
+        const enableCb = row.querySelector(".delegation-domain-enable");
+        if (!enableCb?.checked) return;
+        const permissions = [...row.querySelectorAll(".delegation-permission-cb:checked")].map(cb => cb.value);
+        grants.push({ domain: enableCb.value, permissions });
+    });
+    return grants;
+}
+
+function handleEditDelegation(email, grants, isAdmin) {
     document.getElementById("delegation-email").value = email;
     const passInput = document.getElementById("delegation-password");
     if (passInput) passInput.value = "";
-    const checkboxes = document.querySelectorAll('input[name="delegated-domain-cb"]');
-    checkboxes.forEach(cb => {
-        cb.checked = domains.includes(cb.value);
+
+    const adminCb = document.getElementById("delegation-admin-cb");
+    const matrix = document.getElementById("delegation-permissions-matrix");
+    document.querySelectorAll(".delegation-domain-row").forEach(row => {
+        const enableCb = row.querySelector(".delegation-domain-enable");
+        const permissionGrid = row.querySelector(".delegation-permission-grid");
+        enableCb.checked = false;
+        row.querySelectorAll(".delegation-permission-cb").forEach(cb => {
+            cb.checked = true;
+        });
+        permissionGrid.style.display = "none";
     });
+
+    if (adminCb) {
+        adminCb.checked = !!isAdmin;
+        if (matrix) matrix.style.display = isAdmin ? "none" : "flex";
+    }
+
+    if (!isAdmin) {
+        const grantMap = Object.fromEntries((grants || []).map(grant => [grant.domain, grant.permissions || []]));
+        document.querySelectorAll(".delegation-domain-row").forEach(row => {
+            const domain = row.dataset.domain;
+            const enableCb = row.querySelector(".delegation-domain-enable");
+            const permissionGrid = row.querySelector(".delegation-permission-grid");
+            const selected = grantMap[domain];
+            if (!selected) return;
+            enableCb.checked = true;
+            permissionGrid.style.display = "grid";
+            row.querySelectorAll(".delegation-permission-cb").forEach(cb => {
+                cb.checked = selected.includes(cb.value);
+            });
+        });
+    }
+
+    updateDelegationPasswordHint();
     document.getElementById("form-create-delegation").scrollIntoView({ behavior: "smooth" });
 }
 
@@ -1898,20 +2592,47 @@ document.getElementById("form-create-delegation").addEventListener("submit", asy
     const email = emailInput.value.trim().toLowerCase();
     const passInput = document.getElementById("delegation-password");
     const password = passInput ? passInput.value : "";
-    const checkboxes = document.querySelectorAll('input[name="delegated-domain-cb"]:checked');
-    const domains = Array.from(checkboxes).map(cb => cb.value);
+    const adminCb = document.getElementById("delegation-admin-cb");
+    const isAdmin = !!adminCb?.checked;
+    const grants = collectDelegationGrants();
     
     if (!email) return;
+    if (!validateLocalUserIdentifier(email)) {
+        showAlert("error", "Invalid user identifier. Use a username (e.g. billy), user@local, or email address.");
+        return;
+    }
+    if (delegationPasswordRequired(email) && !password.trim()) {
+        showAlert("error", "Password is required when creating a local user.");
+        return;
+    }
+    if (!isAdmin && grants.length === 0) {
+        showAlert("error", "Select at least one domain with permissions, or grant Admin access.");
+        return;
+    }
+    if (!isAdmin && grants.some(grant => grant.permissions.length === 0)) {
+        showAlert("error", "Each selected domain needs at least one permission.");
+        return;
+    }
     
     try {
-        const payload = { email, domains };
+        const payload = {
+            email,
+            domains: isAdmin ? ["*"] : grants.map(grant => grant.domain),
+            grants: isAdmin ? [] : grants,
+        };
         if (password) payload.password = password;
         
         await apiRequest("/api/admin/delegations", "POST", payload);
         showAlert("success", `Permissions updated for ${email}.`);
         emailInput.value = "";
         if (passInput) passInput.value = "";
-        document.querySelectorAll('input[name="delegated-domain-cb"]').forEach(cb => cb.checked = false);
+        if (adminCb) adminCb.checked = false;
+        document.getElementById("delegation-permissions-matrix")?.style.setProperty("display", "flex");
+        document.querySelectorAll(".delegation-domain-row").forEach(row => {
+            row.querySelector(".delegation-domain-enable").checked = false;
+            row.querySelector(".delegation-permission-grid").style.display = "none";
+            row.querySelectorAll(".delegation-permission-cb").forEach(cb => { cb.checked = true; });
+        });
         await loadDelegationsPage();
     } catch (err) {
         showAlert("error", err.message);
@@ -1932,7 +2653,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             refreshDnsHealthBtn.disabled = true;
             refreshDnsHealthBtn.textContent = "⌛ Checking...";
             try {
-                await loadDnsHealth(activeDomain);
+                await loadDnsHealth(activeDomain, { force: true });
                 showAlert("success", "DNS health rechecked.");
             } catch (err) {
                 showAlert("error", err.message);
@@ -1948,7 +2669,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const meResult = await apiRequest("/api/me");
         if (meResult && meResult.success) {
             currentUser = meResult.user;
-            const oidcEnabled = meResult.oidc_enabled;
+            oidcEnabled = !!meResult.oidc_enabled;
             
             if (currentUser) {
                 // Update User Profile UI details
@@ -1958,16 +2679,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 roleBadge.style.background = currentUser.is_admin ? "rgba(92, 221, 141, 0.2)" : "rgba(99, 102, 241, 0.2)";
                 roleBadge.style.color = currentUser.is_admin ? "var(--accent)" : "#a5b4fc";
                 document.getElementById("user-profile-container").style.display = "block";
-                
-                // Hide features for standard users
-                if (!currentUser.is_admin) {
-                    document.getElementById("nav-tab-domains").style.display = "none";
-                    document.getElementById("nav-tab-delegations").style.display = "none";
-                    document.getElementById("sidebar-quota-container").style.display = "none";
-                    document.getElementById("dash-quota-card").style.display = "none";
-                } else {
-                    document.getElementById("nav-tab-delegations").style.display = "flex";
-                }
+                applyUserPermissionsUI();
             }
         }
     } catch (e) {
@@ -1975,7 +2687,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // 2. Fetch overall quotas (if admin)
-    if (!currentUser || currentUser.is_admin) {
+    if (currentUser?.is_admin) {
         await loadAccountQuota();
     }
     
@@ -2146,3 +2858,167 @@ async function loadSettingsPage() {
         document.getElementById("system-settings-card").style.display = "none";
     }
 }
+
+
+// --- 5.10 System Logs Tab Panel Logic ---
+let logAutoRefreshInterval = null;
+let logsCache = [];
+
+async function loadLogsPage() {
+    if (!currentUser || !currentUser.is_admin) return;
+
+    const dateSelect = document.getElementById("logs-date-select");
+    const limitSelect = document.getElementById("logs-limit-select");
+
+    const selectedDate = dateSelect.value || "";
+    const selectedLimit = limitSelect.value || "100";
+
+    try {
+        const url = `/api/admin/logs?date=${encodeURIComponent(selectedDate)}&limit=${encodeURIComponent(selectedLimit)}`;
+        const res = await apiRequest(url);
+
+        if (res.success && res.data) {
+            logsCache = res.data.entries || [];
+            const availableDates = res.data.available_dates || [];
+            const currentDate = res.data.current_date || "";
+
+            // Populate date selection dropdown if not already populated or if list changed
+            const existingOptions = Array.from(dateSelect.options).map(o => o.value);
+            const matchesAvailable = availableDates.length === existingOptions.length && availableDates.every((v, i) => v === existingOptions[i]);
+
+            if (!matchesAvailable) {
+                dateSelect.innerHTML = "";
+                availableDates.forEach(dateVal => {
+                    const opt = document.createElement("option");
+                    opt.value = dateVal;
+                    opt.textContent = dateVal;
+                    if (dateVal === currentDate) {
+                        opt.selected = true;
+                    }
+                    dateSelect.appendChild(opt);
+                });
+            }
+
+            renderLogsTable();
+        }
+    } catch (err) {
+        console.error("Failed to load logs:", err);
+        showAlert("error", `Failed to retrieve logs: ${err.message}`);
+    }
+}
+
+function renderLogsTable() {
+    const tbody = document.getElementById("logs-list-tbody");
+    const filterQuery = document.getElementById("logs-search").value.trim().toLowerCase();
+
+    tbody.innerHTML = "";
+
+    const filteredLogs = logsCache.filter(log => {
+        if (!filterQuery) return true;
+        const detailsStr = JSON.stringify(log.details || {}).toLowerCase();
+        return (
+            (log.timestamp || "").toLowerCase().includes(filterQuery) ||
+            (log.user || "").toLowerCase().includes(filterQuery) ||
+            (log.action || "").toLowerCase().includes(filterQuery) ||
+            (log.target || "").toLowerCase().includes(filterQuery) ||
+            detailsStr.includes(filterQuery)
+        );
+    });
+
+    if (filteredLogs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--color-muted); padding: 2rem;">No matching log entries found.</td></tr>`;
+        return;
+    }
+
+    filteredLogs.forEach(log => {
+        const tr = document.createElement("tr");
+
+        // Format ISO timestamp slightly
+        let formattedTime = log.timestamp || "";
+        try {
+            const dt = new Date(log.timestamp);
+            if (!isNaN(dt)) {
+                formattedTime = dt.toISOString().replace("T", " ").substring(0, 19);
+            }
+        } catch (_) {}
+
+        tr.innerHTML = `
+            <td><code>${escapeHtml(formattedTime)}</code></td>
+            <td><strong>${escapeHtml(log.user)}</strong></td>
+            <td><span class="badge" style="font-size: 0.8rem; font-weight: 500; font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.4rem; border-radius: 4px;">${escapeHtml(log.action)}</span></td>
+            <td><code style="word-break: break-all;">${escapeHtml(log.target)}</code></td>
+            <td><pre style="font-size: 0.75rem; margin: 0; background: rgba(0,0,0,0.2); padding: 0.4rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; color: var(--color-secondary); max-width: 500px;">${escapeHtml(JSON.stringify(log.details))}</pre></td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+// Initialize log page event handlers
+function initLogsPageEvents() {
+    const dateSelect = document.getElementById("logs-date-select");
+    const limitSelect = document.getElementById("logs-limit-select");
+    const searchInput = document.getElementById("logs-search");
+    const autoRefreshCheckbox = document.getElementById("logs-auto-refresh");
+    const refreshBtn = document.getElementById("btn-refresh-logs");
+
+    if (!dateSelect || !limitSelect || !searchInput || !autoRefreshCheckbox || !refreshBtn) return;
+
+    dateSelect.addEventListener("change", loadLogsPage);
+    limitSelect.addEventListener("change", loadLogsPage);
+    searchInput.addEventListener("input", renderLogsTable);
+
+    refreshBtn.addEventListener("click", async () => {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "⌛ Loading...";
+        try {
+            await loadLogsPage();
+        } finally {
+            refreshBtn.textContent = "🔄 Reload Logs";
+            refreshBtn.disabled = false;
+        }
+    });
+
+    autoRefreshCheckbox.addEventListener("change", () => {
+        if (autoRefreshCheckbox.checked) {
+            setupLogsAutoRefresh();
+        } else {
+            clearLogsAutoRefresh();
+        }
+    });
+
+    // Clear auto refresh interval if tab is changed
+    document.querySelectorAll(".nav-item").forEach(item => {
+        item.addEventListener("click", () => {
+            const tab = item.getAttribute("data-tab");
+            if (tab !== "logs") {
+                autoRefreshCheckbox.checked = false;
+                clearLogsAutoRefresh();
+            }
+        });
+    });
+}
+
+function setupLogsAutoRefresh() {
+    clearLogsAutoRefresh();
+    logAutoRefreshInterval = setInterval(async () => {
+        const activeTab = document.querySelector(".nav-item.active")?.getAttribute("data-tab");
+        if (activeTab === "logs") {
+            await loadLogsPage();
+        } else {
+            clearLogsAutoRefresh();
+        }
+    }, 10000);
+}
+
+function clearLogsAutoRefresh() {
+    if (logAutoRefreshInterval) {
+        clearInterval(logAutoRefreshInterval);
+        logAutoRefreshInterval = null;
+    }
+}
+
+// Register Events
+initLogsPageEvents();
+
+document.getElementById("delegation-email")?.addEventListener("input", updateDelegationPasswordHint);
+document.getElementById("delegation-password")?.addEventListener("input", updateDelegationPasswordHint);
