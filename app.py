@@ -11,11 +11,20 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from dotenv import load_dotenv
 
 from audit_log import write_audit_log
-from dns_health import check_dns_health
+from dns_health import check_dns_health, _normalize_txt, dkim_record_parts, apply_mail_hosting_context
+from app_meta import APP_VERSION, get_about_info
 
 load_dotenv()
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def inject_app_meta():
+    return {
+        "app_version": APP_VERSION,
+        "app_meta": get_about_info(),
+    }
 
 # Flask Session security key and session cookies hardening
 _secret_key = os.getenv("SECRET_KEY")
@@ -29,7 +38,29 @@ import sqlite3
 DATABASE_FILE = os.getenv("DATABASE_FILE", os.path.join(os.path.dirname(__file__), "mxroute-manager.db"))
 MAPPING_FILE = os.path.join(os.path.dirname(__file__), "domain_mapping.json")
 
+ENV_ONLY_SECRET_KEYS = frozenset({
+    "MX_API_KEY",
+    "CF_API_TOKEN",
+    "OIDC_CLIENT_SECRET",
+})
+MASKED_SECRET_KEYS = ENV_ONLY_SECRET_KEYS | frozenset({"ADMIN_PASSWORD"})
+ADMIN_PASSWORD_HASH_KEY = "ADMIN_PASSWORD_HASH"
+SETTINGS_UI_KEYS = [
+    "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_DISCOVERY_URL",
+    "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
+    "MX_SERVER", "MX_USER", "CF_ACCOUNT_ID",
+    "ADMIN_USER",
+]
+SETTINGS_RESPONSE_KEYS = SETTINGS_UI_KEYS + sorted(MASKED_SECRET_KEYS)
+
+
+def get_env_config(key, default=None):
+    return os.getenv(key, default)
+
+
 def get_config_value(key, default=None):
+    if key in ENV_ONLY_SECRET_KEYS:
+        return get_env_config(key, default)
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
@@ -40,7 +71,108 @@ def get_config_value(key, default=None):
             return row[0]
     except Exception:
         pass
-    return os.getenv(key, default)
+    return get_env_config(key, default)
+
+
+def get_admin_password_hash():
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def verify_admin_password(password):
+    password_hash = get_admin_password_hash()
+    if not password_hash:
+        return False
+    from werkzeug.security import check_password_hash
+    return check_password_hash(password_hash, password)
+
+
+def set_admin_password_hash(password, admin_email=None):
+    from werkzeug.security import generate_password_hash
+    password_hash = generate_password_hash(password)
+    admin_email = (admin_email or get_admin_user()).lower().strip()
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (ADMIN_PASSWORD_HASH_KEY, password_hash),
+    )
+    cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE users SET password_hash = ?, is_admin = 1 WHERE id = ?",
+            (password_hash, row[0]),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, is_admin) VALUES (?, ?, 1)",
+            (admin_email, password_hash),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _looks_like_password_hash(value):
+    return isinstance(value, str) and (
+        value.startswith("pbkdf2:") or value.startswith("scrypt:")
+    )
+
+
+def migrate_settings_secrets(cursor):
+    for key in ENV_ONLY_SECRET_KEYS:
+        cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    cursor.execute("SELECT value FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    legacy_password_row = cursor.fetchone()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+    hash_row = cursor.fetchone()
+
+    if legacy_password_row and legacy_password_row[0] and not _looks_like_password_hash(legacy_password_row[0]):
+        from werkzeug.security import generate_password_hash
+        cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (ADMIN_PASSWORD_HASH_KEY, generate_password_hash(legacy_password_row[0])),
+        )
+        cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+    elif not hash_row or not hash_row[0]:
+        env_password = get_env_config("ADMIN_PASSWORD")
+        if env_password:
+            from werkzeug.security import generate_password_hash
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (ADMIN_PASSWORD_HASH_KEY, generate_password_hash(env_password)),
+            )
+            cursor.execute("DELETE FROM settings WHERE key = ?", ("ADMIN_PASSWORD",))
+
+
+def is_secret_configured(key):
+    if key == "ADMIN_PASSWORD":
+        return bool(get_admin_password_hash())
+    if key in ENV_ONLY_SECRET_KEYS:
+        return bool(get_env_config(key))
+    return False
+
+
+def mask_settings_for_response():
+    settings_dict = {}
+    for key in SETTINGS_RESPONSE_KEYS:
+        if key in MASKED_SECRET_KEYS:
+            settings_dict[key] = ""
+            settings_dict[f"{key}_configured"] = is_secret_configured(key)
+        else:
+            settings_dict[key] = get_config_value(key, "")
+    return settings_dict
 
 # Dynamic Configuration Getters
 def is_oidc_enabled():
@@ -71,8 +203,9 @@ def get_oidc_admin_group():
 def get_admin_user():
     return get_config_value("ADMIN_USER", "admin").strip().lower()
 
-def get_admin_password():
-    return get_config_value("ADMIN_PASSWORD")
+
+def admin_password_configured():
+    return bool(get_admin_password_hash())
 
 def get_dmarc_record():
     default = os.getenv("DMARC_RECORD", "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;")
@@ -176,16 +309,19 @@ def init_db():
             except Exception as e:
                 app.logger.error(f"Failed to migrate legacy mapping file: {e}")
  
-        # Seed initial admin user if empty and ADMIN_PASSWORD is set
+        migrate_settings_secrets(cursor)
+        conn.commit()
+
+        # Seed initial admin user if empty and an admin password hash exists
         cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
         admin_count = cursor.fetchone()[0]
-        if admin_count == 0 and get_admin_password():
-            from werkzeug.security import generate_password_hash
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (ADMIN_PASSWORD_HASH_KEY,))
+        admin_hash_row = cursor.fetchone()
+        if admin_count == 0 and admin_hash_row and admin_hash_row[0]:
             admin_email = get_admin_user().lower().strip()
-            hashed_password = generate_password_hash(get_admin_password())
             cursor.execute(
                 "INSERT OR IGNORE INTO users (email, password_hash, is_admin) VALUES (?, ?, 1)",
-                (admin_email, hashed_password)
+                (admin_email, admin_hash_row[0])
             )
             conn.commit()
             app.logger.info(f"Seeded initial admin user '{admin_email}' into SQLite database.")
@@ -428,6 +564,10 @@ def cf_request(method, path, payload=None):
             response = requests.get(url, headers=headers, timeout=30)
         elif method == "POST":
             response = requests.post(url, json=payload, headers=headers, timeout=30)
+        elif method == "PUT":
+            response = requests.put(url, json=payload, headers=headers, timeout=30)
+        elif method == "DELETE":
+            response = requests.delete(url, headers=headers, timeout=30)
         else:
             raise ValueError("Unsupported Cloudflare method")
 
@@ -445,6 +585,366 @@ def cf_request(method, path, payload=None):
     except requests.exceptions.RequestException as e:
         app.logger.error(f"Cloudflare request failed: {e}")
         raise
+
+
+MAIL_DNS_RECORD_TYPES = ("mx", "spf", "dkim", "dmarc")
+DNS_RECORD_TYPES = ("verification",) + MAIL_DNS_RECORD_TYPES
+
+PENDING_MAIL_CHECK = {
+    "status": "pending",
+    "label": "",
+    "message": "MXroute provides this record after the domain is registered (Step 3).",
+}
+
+
+def cf_is_configured():
+    return bool(get_config_value("CF_API_TOKEN") and get_config_value("CF_ACCOUNT_ID"))
+
+
+def domain_on_mxroute(domain):
+    domains_list_res, domains_status = mx_request_raw("GET", "/domains")
+    if domains_status != 200:
+        return False
+    domain_lower = domain.lower()
+    return any(d.lower() == domain_lower for d in domains_list_res.get("data", []))
+
+
+def get_mxroute_verification_record():
+    verify_res, verify_status = mx_request_raw("GET", "/verification-key")
+    if verify_status != 200:
+        return None
+    return verify_res.get("data", {}).get("record")
+
+
+def get_mxroute_dns_data(domain):
+    mx_dns_res, mx_dns_status = mx_request_raw("GET", f"/domains/{domain}/dns")
+    if mx_dns_status != 200:
+        return None
+    data = mx_dns_res.get("data") or {}
+    data["dmarc"] = {"name": "_dmarc", "value": get_dmarc_record()}
+    return data
+
+
+def get_domain_mail_hosting(domain):
+    res, status = mx_request_raw("GET", f"/domains/{domain}")
+    if status != 200:
+        return True
+    return bool(res.get("data", {}).get("mail_hosting", True))
+
+
+def build_setup_health(domain):
+    """DNS health for the setup wizard; supports domains not yet on MXroute."""
+    domain = domain.lower().strip()
+    on_mxroute = domain_on_mxroute(domain)
+    verification_record = get_mxroute_verification_record()
+
+    if on_mxroute:
+        mx_dns_data = get_mxroute_dns_data(domain)
+        if not mx_dns_data:
+            return None
+        health = check_dns_health(
+            domain,
+            mx_dns_data,
+            verification_record=verification_record,
+            dmarc_expected=get_dmarc_record(),
+        )
+    else:
+        health = {
+            "domain": domain,
+            "overall": "degraded",
+            "checks": {},
+        }
+        if verification_record:
+            partial = check_dns_health(
+                domain,
+                {},
+                verification_record=verification_record,
+                dmarc_expected=get_dmarc_record(),
+            )
+            health["checks"]["verification"] = partial["checks"]["verification"]
+        mail_labels = {
+            "mx": "MX Records",
+            "spf": "SPF (TXT)",
+            "dkim": "DKIM (TXT)",
+            "dmarc": "DMARC (TXT)",
+        }
+        for key, label in mail_labels.items():
+            check = dict(PENDING_MAIL_CHECK)
+            check["label"] = label
+            if key == "dkim":
+                check["message"] = (
+                    "DKIM keys are generated by MXroute when the domain is registered. "
+                    "Complete Step 3, then return here to add the record."
+                )
+            health["checks"][key] = check
+
+        statuses = [c["status"] for c in health["checks"].values()]
+        if any(s == "fail" for s in statuses):
+            health["overall"] = "unhealthy"
+        elif any(s in ("warn", "pending") for s in statuses):
+            health["overall"] = "degraded"
+        else:
+            health["overall"] = "healthy"
+
+    if on_mxroute:
+        health = apply_mail_hosting_context(health, get_domain_mail_hosting(domain))
+
+    health["on_mxroute"] = on_mxroute
+    health["cf_configured"] = cf_is_configured()
+    _, mx_status = mx_request_raw("GET", "/domains")
+    health["mxroute_reachable"] = mx_status == 200
+    return health
+
+
+def ensure_cf_zone(domain, steps=None):
+    cf_account = get_config_value("CF_ACCOUNT_ID")
+    if steps is not None:
+        steps.append("Querying Cloudflare for existing Zone...")
+    zone_search = cf_request("GET", f"/zones?name={domain}")
+    if zone_search.get("success") and zone_search.get("result"):
+        zone_id = zone_search["result"][0]["id"]
+        if steps is not None:
+            steps.append(f"Found existing Cloudflare Zone (ID: {zone_id})")
+        return zone_id
+
+    if steps is not None:
+        steps.append("Creating new Cloudflare Zone...")
+    zone_create = cf_request("POST", "/zones", {
+        "name": domain,
+        "account": {"id": cf_account},
+        "jump_start": True,
+    })
+    if not zone_create.get("success"):
+        err_msg = zone_create.get("errors", [{}])[0].get("message", "Unknown Cloudflare error")
+        raise ValueError(f"Cloudflare Zone creation failed: {err_msg}")
+    zone_id = zone_create["result"]["id"]
+    if steps is not None:
+        steps.append(f"Created new Cloudflare Zone (ID: {zone_id})")
+    return zone_id
+
+
+def fetch_cf_dns_sets(zone_id):
+    cf_dns_search = cf_request("GET", f"/zones/{zone_id}/dns_records?per_page=100")
+    existing_records = cf_dns_search.get("result", []) if cf_dns_search.get("success") else []
+    existing_mx = set()
+    existing_txt = set()
+    for rec in existing_records:
+        rtype = rec.get("type")
+        rname = rec.get("name", "").lower().rstrip(".")
+        rcontent = rec.get("content", "").strip('"')
+        if rtype == "MX":
+            existing_mx.add((rname, rcontent.lower(), rec.get("priority")))
+        elif rtype == "TXT":
+            existing_txt.add((rname, rcontent))
+    return existing_mx, existing_txt, existing_records
+
+
+def cf_upsert_txt(zone_id, cf_name, fqdn, content, existing_records, existing_txt, steps, log_messages):
+    """Create or update a TXT record when missing or incorrect. Returns added, updated, or skipped."""
+    fqdn = fqdn.lower().rstrip(".")
+    expected_norm = _normalize_txt(content)
+    at_name = [
+        rec for rec in existing_records
+        if rec.get("type") == "TXT" and rec.get("name", "").lower().rstrip(".") == fqdn
+    ]
+
+    for rec in at_name:
+        if _normalize_txt(rec.get("content", "")) == expected_norm:
+            if steps is not None:
+                steps.append(log_messages["skipped"])
+            return "skipped"
+
+    payload = {"type": "TXT", "name": cf_name, "content": content, "ttl": 3600}
+
+    if at_name:
+        result = cf_request("PUT", f"/zones/{zone_id}/dns_records/{at_name[0]['id']}", payload)
+        if not result.get("success"):
+            err_msg = result.get("errors", [{}])[0].get("message", "Unknown Cloudflare error")
+            raise ValueError(f"Failed to update TXT record at {fqdn}: {err_msg}")
+        for extra in at_name[1:]:
+            cf_request("DELETE", f"/zones/{zone_id}/dns_records/{extra['id']}")
+        existing_txt.difference_update({(n, c) for n, c in existing_txt if n == fqdn})
+        existing_txt.add((fqdn, content))
+        if steps is not None:
+            steps.append(log_messages["updated"])
+        return "updated"
+
+    result = cf_request("POST", f"/zones/{zone_id}/dns_records", payload)
+    if not result.get("success"):
+        err_msg = result.get("errors", [{}])[0].get("message", "Unknown Cloudflare error")
+        raise ValueError(f"Failed to add TXT record at {fqdn}: {err_msg}")
+    existing_txt.add((fqdn, content))
+    if steps is not None:
+        steps.append(log_messages["added"])
+    return "added"
+
+
+def deploy_dns_record_to_cf(domain, zone_id, record_type, mx_dns_data, verification_record, existing_mx, existing_txt, existing_records, steps=None):
+    """Deploy a single DNS record type to Cloudflare. Returns 'added' or 'skipped'."""
+    domain_lower = domain.lower()
+
+    if record_type == "verification":
+        if not verification_record:
+            raise ValueError("Failed to get verification key from MXroute")
+        verify_name = verification_record.get("name")
+        verify_value = verification_record.get("value")
+        verify_name_full = f"{verify_name}.{domain}".lower()
+        return cf_upsert_txt(
+            zone_id, verify_name, verify_name_full, verify_value,
+            existing_records, existing_txt, steps,
+            {
+                "skipped": "Verification TXT record already correct in Cloudflare",
+                "added": "Verification TXT record deployed successfully",
+                "updated": "Verification TXT record updated in Cloudflare",
+            },
+        )
+
+    if record_type not in MAIL_DNS_RECORD_TYPES:
+        raise ValueError(f"Unknown record type: {record_type}")
+
+    if not mx_dns_data:
+        raise ValueError("Mail DNS records require the domain to be registered on MXroute first")
+
+    if record_type == "mx" and mx_dns_data.get("mx_records"):
+        added = False
+        for mx in mx_dns_data["mx_records"]:
+            mx_host = mx["hostname"].lower().rstrip(".")
+            mx_priority = mx["priority"]
+            has_mx = any(
+                rname == domain_lower and rcontent == mx_host
+                and int(rpriority or 0) == int(mx_priority or 0)
+                for rname, rcontent, rpriority in existing_mx
+            )
+            if not has_mx:
+                cf_request("POST", f"/zones/{zone_id}/dns_records", {
+                    "type": "MX",
+                    "name": "@",
+                    "content": mx["hostname"],
+                    "priority": mx["priority"],
+                    "ttl": 3600,
+                })
+                added = True
+        if steps is not None:
+            steps.append("MX records configured" if added else "MX records already exist (skipping)")
+        return "added" if added else "skipped"
+
+    if record_type == "spf" and mx_dns_data.get("spf"):
+        spf_val = mx_dns_data["spf"]["value"]
+        return cf_upsert_txt(
+            zone_id, "@", domain_lower, spf_val,
+            existing_records, existing_txt, steps,
+            {
+                "skipped": "SPF record already correct in Cloudflare",
+                "added": "SPF record configured",
+                "updated": "SPF record updated in Cloudflare",
+            },
+        )
+
+    if record_type == "dkim" and mx_dns_data.get("dkim"):
+        dkim_host_part, dkim_name_full = dkim_record_parts(mx_dns_data["dkim"], domain)
+        dkim_val = mx_dns_data["dkim"]["value"]
+        return cf_upsert_txt(
+            zone_id, dkim_host_part, dkim_name_full, dkim_val,
+            existing_records, existing_txt, steps,
+            {
+                "skipped": "DKIM record already correct in Cloudflare",
+                "added": "DKIM record configured",
+                "updated": "DKIM record updated in Cloudflare (previous value did not match MXroute)",
+            },
+        )
+
+    if record_type == "dmarc":
+        dmarc_val = get_dmarc_record()
+        dmarc_name_full = f"_dmarc.{domain}".lower()
+        return cf_upsert_txt(
+            zone_id, "_dmarc", dmarc_name_full, dmarc_val,
+            existing_records, existing_txt, steps,
+            {
+                "skipped": "DMARC record already correct in Cloudflare",
+                "added": "DMARC record configured",
+                "updated": "DMARC record updated in Cloudflare",
+            },
+        )
+
+    if steps is not None:
+        steps.append(f"No {record_type.upper()} data available from MXroute (skipping)")
+    return "skipped"
+
+
+def register_domain_on_mxroute(domain, steps=None):
+    if domain_on_mxroute(domain):
+        if steps is not None:
+            steps.append("Domain already registered on MXroute")
+        return "skipped"
+    mx_domain_add, mx_add_status = mx_request_raw("POST", "/domains", {"domain": domain})
+    if mx_add_status not in [200, 201]:
+        err_msg = mx_domain_add.get("error", {}).get("message", "Unknown error")
+        raise ValueError(f"Failed to register domain with MXroute: {err_msg}")
+    if steps is not None:
+        steps.append("Domain registered on MXroute successfully")
+    audit("domain.create", target=domain)
+    return "added"
+
+
+def deploy_missing_dns_to_cf(domain, record_types=None):
+    """Fix missing DNS records in Cloudflare for a domain."""
+    steps = []
+    if not cf_is_configured():
+        raise ValueError("Cloudflare credentials not configured")
+
+    health = build_setup_health(domain)
+    if not health:
+        raise ValueError("Failed to build DNS health state")
+
+    if record_types is None:
+        record_types = [
+            key for key, check in health["checks"].items()
+            if check["status"] in ("warn", "fail")
+        ]
+    else:
+        record_types = [r.lower() for r in record_types]
+
+    mail_requested = [r for r in record_types if r in MAIL_DNS_RECORD_TYPES]
+    if mail_requested and not health["on_mxroute"]:
+        raise ValueError(
+            "MX, SPF, DKIM, and DMARC records require the domain to be registered on MXroute first. "
+            "Complete Step 3, then return to Step 2."
+        )
+
+    if not record_types:
+        return {"fixed": [], "skipped": list(health["checks"].keys()), "steps": ["All DNS records already look good"]}
+
+    steps.append("Fetching existing DNS records from Cloudflare...")
+    zone_id = ensure_cf_zone(domain, steps)
+    existing_mx, existing_txt, existing_records = fetch_cf_dns_sets(zone_id)
+
+    verification_record = get_mxroute_verification_record()
+    mx_dns_data = get_mxroute_dns_data(domain) if health["on_mxroute"] else None
+
+    fixed = []
+    skipped = []
+    for record_type in record_types:
+        if record_type not in DNS_RECORD_TYPES:
+            continue
+        check = health["checks"].get(record_type, {})
+        if check.get("status") == "pass":
+            skipped.append(record_type)
+            continue
+        if check.get("status") == "pending":
+            skipped.append(record_type)
+            continue
+        result = deploy_dns_record_to_cf(
+            domain, zone_id, record_type, mx_dns_data, verification_record,
+            existing_mx, existing_txt, existing_records, steps,
+        )
+        if result in ("added", "updated"):
+            fixed.append(record_type)
+        else:
+            skipped.append(record_type)
+
+    if fixed:
+        audit("dns.fix", target=domain, records=fixed)
+    return {"fixed": fixed, "skipped": skipped, "steps": steps}
 
 # --- OIDC AUTHENTICATION ROUTES ---
 
@@ -480,8 +980,8 @@ def login_page():
                 write_audit_log("auth.login", user_row[1], user_row[1])
                 return redirect(url_for('home'))
         
-        # Fallback to local admin config check
-        if get_admin_password() and username == get_admin_user() and secrets.compare_digest(password, get_admin_password()):
+        # Fallback to local admin config check (hashed password only)
+        if username == get_admin_user() and verify_admin_password(password):
             session["user"] = {
                 "email": username,
                 "is_admin": True,
@@ -798,40 +1298,39 @@ def delete_delegation(email=None):
 @app.route('/api/admin/settings', methods=['GET'])
 @require_admin
 def get_settings():
-    keys = [
-        "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_DISCOVERY_URL",
-        "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
-        "MX_SERVER", "MX_USER", "MX_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID",
-        "ADMIN_USER", "ADMIN_PASSWORD"
-    ]
-    settings_dict = {}
-    for key in keys:
-        settings_dict[key] = get_config_value(key, "")
     return jsonify({
         "success": True,
-        "data": settings_dict
+        "data": mask_settings_for_response()
     })
 
 @app.route('/api/admin/settings', methods=['POST'])
 @require_admin
 def update_settings():
     data = request.json or {}
-    allowed_keys = [
-        "OIDC_ENABLED", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_DISCOVERY_URL",
-        "OIDC_REDIRECT_URI", "OIDC_SCOPES", "OIDC_ADMIN_USERS", "OIDC_ADMIN_GROUP",
-        "MX_SERVER", "MX_USER", "MX_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID",
-        "ADMIN_USER", "ADMIN_PASSWORD"
-    ]
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
-        for key in allowed_keys:
+        updated_keys = []
+
+        for key in SETTINGS_UI_KEYS:
             if key in data:
                 val = str(data[key]).strip()
                 cursor.execute(
                     "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                     (key, val)
                 )
+                updated_keys.append(key)
+
+        conn.commit()
+
+        if "ADMIN_PASSWORD" in data:
+            new_password = str(data["ADMIN_PASSWORD"])
+            if new_password.strip():
+                admin_email = str(data.get("ADMIN_USER", get_admin_user())).strip().lower()
+                set_admin_password_hash(new_password.strip(), admin_email=admin_email)
+                updated_keys.append("ADMIN_PASSWORD")
+
+        migrate_settings_secrets(cursor)
         conn.commit()
         conn.close()
         
@@ -841,7 +1340,7 @@ def update_settings():
             _oidc_config = None
             _oidc_config_fetched_at = 0.0
             
-        audit("settings.update", target="system", keys=[key for key in allowed_keys if key in data])
+        audit("settings.update", target="system", keys=updated_keys)
         return jsonify({"success": True})
     except Exception as e:
         app.logger.error(f"Error saving system settings: {e}")
@@ -850,6 +1349,12 @@ def update_settings():
 @app.route('/')
 def home():
     return render_template('index.html')
+
+
+@app.route('/api/about')
+def get_about():
+    return jsonify({"success": True, "data": get_about_info()})
+
 
 # --- CLOUDFLARE INTEGRATION API ---
 
@@ -868,187 +1373,78 @@ def cloudflare_setup():
     domain = data.get("domain")
     if not domain or not validate_domain(domain):
         return jsonify({"success": False, "error": {"message": "Invalid domain name format"}}), 400
-        
-    cf_token = get_config_value("CF_API_TOKEN")
-    cf_account = get_config_value("CF_ACCOUNT_ID")
-    if not cf_token or not cf_account:
+
+    if not cf_is_configured():
         return jsonify({"success": False, "error": {"message": "Cloudflare credentials not configured"}}), 400
 
     steps = []
-    
-    try:
-        # Step 1: Find or Create Zone in Cloudflare
-        steps.append("Querying Cloudflare for existing Zone...")
-        zone_search = cf_request("GET", f"/zones?name={domain}")
-        zone_id = None
-        if zone_search.get("success") and zone_search.get("result"):
-            zone_id = zone_search["result"][0]["id"]
-            steps.append(f"Found existing Cloudflare Zone (ID: {zone_id})")
-        else:
-            steps.append("Creating new Cloudflare Zone...")
-            # Create zone
-            zone_create = cf_request("POST", "/zones", {
-                "name": domain,
-                "account": {"id": cf_account},
-                "jump_start": True
-            })
-            if not zone_create.get("success"):
-                err_msg = zone_create.get("errors", [{}])[0].get("message", "Unknown Cloudflare error")
-                return jsonify({"success": False, "error": {"message": f"Cloudflare Zone creation failed: {err_msg}"}, "steps": steps}), 500
-            zone_id = zone_create["result"]["id"]
-            steps.append(f"Created new Cloudflare Zone (ID: {zone_id})")
-            
-        # Step 2: Get verification key from MXroute
-        steps.append("Retrieving domain verification details from MXroute...")
-        mx_verify_data, mx_verify_status = mx_request_raw("GET", "/verification-key")
-        if mx_verify_status != 200:
-            return jsonify({"success": False, "error": {"message": "Failed to get verification key from MXroute"}, "steps": steps}), 500
-        mx_verify_rec = mx_verify_data.get("data", {}).get("record", {})
-        verify_name = mx_verify_rec.get("name")
-        verify_value = mx_verify_rec.get("value")
-        
-        # Query all existing DNS records in Cloudflare for this zone once
-        steps.append("Fetching existing DNS records from Cloudflare...")
-        cf_dns_search = cf_request("GET", f"/zones/{zone_id}/dns_records?per_page=100")
-        existing_records = cf_dns_search.get("result", []) if cf_dns_search.get("success") else []
-        
-        existing_mx = set()
-        existing_txt = set()
-        
-        for rec in existing_records:
-            rtype = rec.get("type")
-            rname = rec.get("name", "").lower().rstrip('.')
-            rcontent = rec.get("content", "").strip('"')
-            if rtype == "MX":
-                existing_mx.add((rname, rcontent.lower(), rec.get("priority")))
-            elif rtype == "TXT":
-                existing_txt.add((rname, rcontent))
-        
-        # Step 3: Add Verification TXT Record in Cloudflare
-        steps.append("Injecting DNS verification TXT record into Cloudflare...")
-        verify_name_full = f"{verify_name}.{domain}".lower()
-        has_verify = any(rname == verify_name_full and rcontent == verify_value for rname, rcontent in existing_txt)
-        if not has_verify:
-            verify_dns_add = cf_request("POST", f"/zones/{zone_id}/dns_records", {
-                "type": "TXT",
-                "name": verify_name,
-                "content": verify_value,
-                "ttl": 3600
-            })
-            if not verify_dns_add.get("success"):
-                err_msg = verify_dns_add.get("errors", [{}])[0].get("message", "Unknown Cloudflare error")
-                return jsonify({"success": False, "error": {"message": f"Failed to add verification TXT: {err_msg}"}, "steps": steps}), 500
-            steps.append("Verification TXT record deployed successfully")
-            # Add to local cache in case of duplicates
-            existing_txt.add((verify_name_full, verify_value))
-        else:
-            steps.append("Verification TXT record already exists in Cloudflare")
-            
-        # Step 4: Register Domain with MXroute
-        steps.append("Registering domain with MXroute platform...")
-        domains_list_res, domains_status = mx_request_raw("GET", "/domains")
-        if domains_status == 200 and domain in domains_list_res.get("data", []):
-            steps.append("Domain already registered on MXroute")
-        else:
-            # Register it
-            mx_domain_add, mx_add_status = mx_request_raw("POST", "/domains", {"domain": domain})
-            if mx_add_status not in [200, 201]:
-                err_msg = mx_domain_add.get("error", {}).get("message", "Unknown error")
-                return jsonify({"success": False, "error": {"message": f"Failed to register domain with MXroute: {err_msg}"}, "steps": steps}), 500
-            steps.append("Domain registered on MXroute successfully")
-            
-        # Step 5: Fetch DNS configs from MXroute
-        steps.append("Retrieving MX/SPF/DKIM profiles from MXroute...")
-        mx_dns_res, mx_dns_status = mx_request_raw("GET", f"/domains/{domain}/dns")
-        if mx_dns_status != 200:
-            return jsonify({"success": False, "error": {"message": "Failed to fetch MXroute DNS configurations"}, "steps": steps}), 500
-        mx_dns_data = mx_dns_res["data"]
-        
-        # Step 6: Create MX, SPF, DKIM records in Cloudflare
-        steps.append("Deploying mail service records to Cloudflare nameservers...")
-        
-        # Add MX records
-        if mx_dns_data.get("mx_records"):
-            for mx in mx_dns_data["mx_records"]:
-                mx_host = mx["hostname"].lower().rstrip('.')
-                mx_priority = mx["priority"]
-                has_mx = any(
-                    rname == domain.lower() and rcontent == mx_host
-                    and int(rpriority or 0) == int(mx_priority or 0)
-                    for rname, rcontent, rpriority in existing_mx
-                )
-                if not has_mx:
-                    cf_request("POST", f"/zones/{zone_id}/dns_records", {
-                        "type": "MX",
-                        "name": "@",
-                        "content": mx["hostname"],
-                        "priority": mx["priority"],
-                        "ttl": 3600
-                    })
-            steps.append("MX records configured")
-            
-        # Add SPF record
-        if mx_dns_data.get("spf"):
-            spf_val = mx_dns_data["spf"]["value"]
-            has_spf = any(
-                rname == domain.lower() and rcontent.startswith("v=spf1")
-                for rname, rcontent in existing_txt
-            )
-            if not has_spf:
-                cf_request("POST", f"/zones/{zone_id}/dns_records", {
-                    "type": "TXT",
-                    "name": "@",
-                    "content": spf_val,
-                    "ttl": 3600
-                })
-                steps.append("SPF record configured")
-            else:
-                steps.append("SPF record exists (skipping)")
-                
-        # Add DKIM record
-        if mx_dns_data.get("dkim"):
-            dkim_name = mx_dns_data["dkim"]["name"]
-            dkim_val = mx_dns_data["dkim"]["value"]
-            dkim_host_part = dkim_name.replace(f".{domain}", "")
-            dkim_name_full = f"{dkim_host_part}.{domain}".lower()
-            
-            has_dkim = any(rname == dkim_name_full for rname, rcontent in existing_txt)
-            if not has_dkim:
-                cf_request("POST", f"/zones/{zone_id}/dns_records", {
-                    "type": "TXT",
-                    "name": dkim_host_part,
-                    "content": dkim_val,
-                    "ttl": 3600
-                })
-                steps.append("DKIM record configured")
-            else:
-                steps.append("DKIM record exists (skipping)")
+    domain = domain.lower().strip()
 
-        # Add DMARC record
-        dmarc_val = get_dmarc_record()
-        dmarc_name_full = f"_dmarc.{domain}".lower()
-        has_dmarc = any(
-            rname == dmarc_name_full and "v=dmarc1" in rcontent.replace(" ", "").lower()
-            for rname, rcontent in existing_txt
+    try:
+        zone_id = ensure_cf_zone(domain, steps)
+        verification_record = get_mxroute_verification_record()
+        if not verification_record:
+            return jsonify({"success": False, "error": {"message": "Failed to get verification key from MXroute"}, "steps": steps}), 500
+
+        steps.append("Fetching existing DNS records from Cloudflare...")
+        existing_mx, existing_txt, existing_records = fetch_cf_dns_sets(zone_id)
+
+        steps.append("Injecting DNS verification TXT record into Cloudflare...")
+        deploy_dns_record_to_cf(
+            domain, zone_id, "verification", None, verification_record,
+            existing_mx, existing_txt, existing_records, steps,
         )
-        if not has_dmarc:
-            cf_request("POST", f"/zones/{zone_id}/dns_records", {
-                "type": "TXT",
-                "name": "_dmarc",
-                "content": dmarc_val,
-                "ttl": 3600
-            })
-            steps.append("DMARC record configured")
-            existing_txt.add((dmarc_name_full, dmarc_val))
-        else:
-            steps.append("DMARC record exists (skipping)")
-                
+
+        steps.append("Registering domain with MXroute platform...")
+        register_domain_on_mxroute(domain, steps)
+
+        steps.append("Retrieving MX/SPF/DKIM profiles from MXroute...")
+        mx_dns_data = get_mxroute_dns_data(domain)
+        if not mx_dns_data:
+            return jsonify({"success": False, "error": {"message": "Failed to fetch MXroute DNS configurations"}, "steps": steps}), 500
+
+        steps.append("Deploying mail service records to Cloudflare nameservers...")
+        for record_type in MAIL_DNS_RECORD_TYPES:
+            deploy_dns_record_to_cf(
+                domain, zone_id, record_type, mx_dns_data, verification_record,
+                existing_mx, existing_txt, existing_records, steps,
+            )
+
         steps.append("Domain setup complete! All MXroute and Cloudflare settings active.")
         audit("cloudflare.setup", target=domain, steps=len(steps))
         return jsonify({"success": True, "steps": steps})
-        
+
     except Exception as e:
         return jsonify({"success": False, "error": {"message": str(e)}, "steps": steps}), 500
+
+
+@app.route('/api/domains/<domain>/dns/setup-health', methods=['GET'])
+@require_admin
+def get_dns_setup_health(domain):
+    if not validate_domain(domain):
+        return jsonify({"success": False, "error": {"message": "Invalid domain name format"}}), 400
+    health = build_setup_health(domain)
+    if not health:
+        return jsonify({"success": False, "error": {"message": "Failed to fetch DNS expectations from MXroute"}}), 502
+    return jsonify({"success": True, "data": health})
+
+
+@app.route('/api/domains/<domain>/dns/fix', methods=['POST'])
+@require_admin
+def fix_domain_dns(domain):
+    if not validate_domain(domain):
+        return jsonify({"success": False, "error": {"message": "Invalid domain name format"}}), 400
+    if not cf_is_configured():
+        return jsonify({"success": False, "error": {"message": "Cloudflare credentials not configured"}}), 400
+
+    data = request.json or {}
+    record_types = data.get("records")
+
+    try:
+        result = deploy_missing_dns_to_cf(domain, record_types)
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": {"message": str(e)}}), 400
 
 # --- DOMAINS API ---
 
@@ -1304,6 +1700,7 @@ def get_dns_health(domain):
         verification_record=verification_record,
         dmarc_expected=get_dmarc_record(),
     )
+    health = apply_mail_hosting_context(health, get_domain_mail_hosting(domain))
 
     _, mx_status = mx_request_raw("GET", "/domains")
     health["mxroute_reachable"] = mx_status == 200

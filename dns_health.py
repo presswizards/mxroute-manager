@@ -50,6 +50,74 @@ def _check_status(passed, optional=False):
     return "warn" if optional else "fail"
 
 
+MAIL_DNS_CHECK_KEYS = ("mx", "spf", "dkim", "dmarc")
+
+
+def overall_from_checks(checks, exclude_keys=None):
+    exclude = set(exclude_keys or ())
+    statuses = [
+        check["status"]
+        for key, check in checks.items()
+        if key not in exclude and check.get("status") not in ("skipped",)
+    ]
+    if any(status == "fail" for status in statuses):
+        return "unhealthy"
+    if any(status == "warn" for status in statuses):
+        return "degraded"
+    return "healthy"
+
+
+def apply_mail_hosting_context(health, mail_hosting_enabled):
+    """When mail hosting is disabled, mail DNS checks are informational only."""
+    health["mail_hosting_enabled"] = bool(mail_hosting_enabled)
+    if mail_hosting_enabled:
+        return health
+
+    checks = health.setdefault("checks", {})
+    for key in MAIL_DNS_CHECK_KEYS:
+        if key not in checks:
+            continue
+        checks[key] = {
+            **checks[key],
+            "status": "skipped",
+            "message": "Mail hosting is disabled — this record is not required",
+        }
+    health["overall"] = overall_from_checks(checks)
+    return health
+
+
+def dkim_record_parts(dkim_data, domain):
+    """Resolve MXroute's relative DKIM host (e.g. x._domainkey) to a public DNS FQDN."""
+    domain = domain.lower().rstrip(".")
+    dkim_name = str(dkim_data.get("name", f"x._domainkey.{domain}")).lower().rstrip(".")
+    if dkim_name.endswith(f".{domain}"):
+        host_part = dkim_name[: -(len(domain) + 1)]
+        fqdn = dkim_name
+    else:
+        host_part = dkim_name
+        fqdn = f"{host_part}.{domain}"
+    return host_part, fqdn
+
+
+def _dkim_public_key(value):
+    norm = _normalize_txt(value)
+    for segment in norm.split(";"):
+        if segment.startswith("p="):
+            return segment[2:]
+    return None
+
+
+def _dkim_matches(expected_value, found_values):
+    expected_norm = _normalize_txt(expected_value)
+    found_norms = [_normalize_txt(value) for value in found_values]
+    if expected_norm and expected_norm in found_norms:
+        return True
+    expected_key = _dkim_public_key(expected_value)
+    if not expected_key:
+        return bool(found_norms)
+    return any(_dkim_public_key(value) == expected_key for value in found_values)
+
+
 def check_dns_health(domain, expected_dns, verification_record=None, dmarc_expected=None):
     """Compare live public DNS against MXroute-provided expectations."""
     domain = domain.lower().strip()
@@ -87,15 +155,15 @@ def check_dns_health(domain, expected_dns, verification_record=None, dmarc_expec
     }
 
     dkim_data = expected_dns.get("dkim") or {}
-    dkim_name = str(dkim_data.get("name") or f"x._domainkey.{domain}").lower().rstrip(".")
+    _, dkim_fqdn = dkim_record_parts(dkim_data, domain)
     expected_dkim = dkim_data.get("value", "")
-    dkim_records = [_normalize_txt(txt) for txt in _query_txt(dkim_name)]
-    expected_dkim_norm = _normalize_txt(expected_dkim) if expected_dkim else ""
-    dkim_pass = expected_dkim_norm in dkim_records if expected_dkim_norm else bool(dkim_records)
+    dkim_records_raw = _query_txt(dkim_fqdn)
+    dkim_records = [_normalize_txt(txt) for txt in dkim_records_raw]
+    dkim_pass = _dkim_matches(expected_dkim, dkim_records_raw)
     checks["dkim"] = {
         "status": _check_status(dkim_pass, optional=True),
         "label": "DKIM (TXT)",
-        "expected_host": dkim_name,
+        "expected_host": dkim_fqdn,
         "expected": expected_dkim,
         "found": dkim_records,
         "message": "DKIM record present" if dkim_pass else "DKIM record missing or does not match",
@@ -132,16 +200,8 @@ def check_dns_health(domain, expected_dns, verification_record=None, dmarc_expec
             "message": "Verification TXT present" if verify_pass else "Verification TXT missing",
         }
 
-    statuses = [check["status"] for check in checks.values()]
-    if any(status == "fail" for status in statuses):
-        overall = "unhealthy"
-    elif any(status == "warn" for status in statuses):
-        overall = "degraded"
-    else:
-        overall = "healthy"
-
     return {
         "domain": domain,
-        "overall": overall,
+        "overall": overall_from_checks(checks),
         "checks": checks,
     }

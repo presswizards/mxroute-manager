@@ -77,8 +77,11 @@
         <div class="flex-row justify-between align-center mb-4">
             <h3 class="card-title" style="color: var(--success); margin-bottom: 0;">🎉 Mailbox Created
                 Successfully!</h3>
-            <button class="btn btn-secondary btn-sm"
-                onclick="document.getElementById('credentials-output-card').style.display='none'">Dismiss</button>
+            <div class="flex-row" style="gap: 0.5rem;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-copy-mailbox-credentials">📋 Copy Credentials</button>
+                <button class="btn btn-secondary btn-sm"
+                    onclick="document.getElementById('credentials-output-card').style.display='none'">Dismiss</button>
+            </div>
         </div>
         <p class="stat-card-subtitle mb-4">Copy or screenshot these configurations to onboard the user:</p>
         <div style="background: rgba(0, 0, 0, 0.4); border: 1px solid var(--glass-border); border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem; color: #adbac7; line-height: 1.6;">
