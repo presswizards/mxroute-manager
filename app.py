@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from dotenv import load_dotenv
 
 from models.db import init_db, use_secure_cookies, get_or_create_secret_key, is_oidc_enabled, get_reset_portal_by_host
-from app_meta import APP_VERSION, get_about_info
+from app_meta import APP_VERSION, get_about_info, get_version_label
 from utils.icons import icon
 from routes import (
     auth_bp,
@@ -78,6 +78,7 @@ def inject_app_meta():
     branding = get_portal_branding_context(getattr(g, "reset_portal", None))
     return {
         "app_version": APP_VERSION,
+        "app_version_label": get_version_label(),
         "app_meta": get_about_info(),
         "icon": icon,
         **branding,

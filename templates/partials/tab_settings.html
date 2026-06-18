@@ -268,10 +268,18 @@
             <div class="about-header">
                 <span class="app-logo" role="img" aria-label="{{ app_meta.name }}"></span>
                 <div>
-                    <p class="about-title">{{ app_meta.name }} <span class="about-version">v{{ app_meta.version }}</span></p>
+                    <p class="about-title">{{ app_meta.name }} <span class="about-version">{{ app_meta.version_label }}</span></p>
                 </div>
             </div>
             <p class="stat-card-subtitle about-description">{{ app_meta.description }}</p>
+            {% if app_meta.build.describe %}
+            <p class="about-build">
+                Build: <code>{{ app_meta.build.describe }}</code>
+                {% if app_meta.commit_url %}
+                · <a href="{{ app_meta.commit_url }}" target="_blank" rel="noopener noreferrer">view commit</a>
+                {% endif %}
+            </p>
+            {% endif %}
 
             <div class="about-links">
                 <a href="{{ app_meta.github_url }}" target="_blank" rel="noopener noreferrer">GitHub Repository</a>

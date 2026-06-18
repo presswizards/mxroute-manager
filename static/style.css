@@ -246,6 +246,7 @@ aside.sidebar {
     font-weight: 500;
     margin-top: 0.2rem;
     letter-spacing: 0.05em;
+    line-height: 1.35;
 }
 
 .brand-title-block {
@@ -1337,6 +1338,26 @@ tr:hover td {
 .about-version {
     color: var(--accent);
     font-weight: 700;
+}
+
+.about-build {
+    margin: 0.75rem 0 0;
+    font-size: 0.8rem;
+    color: var(--color-secondary);
+}
+
+.about-build code {
+    font-size: 0.78rem;
+    color: var(--color-primary);
+}
+
+.about-build a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.about-build a:hover {
+    text-decoration: underline;
 }
 
 .about-description {
