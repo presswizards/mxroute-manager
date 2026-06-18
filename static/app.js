@@ -1068,6 +1068,13 @@ function highlightResetPortalTheme(themeId) {
     });
 }
 
+function linkifyMessageUrl(message, url) {
+    const msg = message || "";
+    if (!url || !msg.includes(url)) return escapeHtml(msg);
+    const idx = msg.indexOf(url);
+    return `${escapeHtml(msg.slice(0, idx))}<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>${escapeHtml(msg.slice(idx + url.length))}`;
+}
+
 async function populateResetPortalDomainSelect() {
     const select = document.getElementById("reset-portal-domain-select");
     if (!select) return;
@@ -1155,7 +1162,8 @@ function renderResetPortalForm(data) {
         httpsStatus.style.display = "block";
         const status = data.https.status;
         httpsStatus.className = `status-banner mb-4 ${status === "pass" ? "success" : status === "fail" ? "error" : status === "pending" ? "warning" : "info"}`;
-        httpsStatus.textContent = data.https.message || "";
+        const httpsUrl = data.https.url || (status === "pass" ? data.portal_url : "");
+        httpsStatus.innerHTML = linkifyMessageUrl(data.https.message || "", httpsUrl);
     } else if (httpsStatus) {
         httpsStatus.style.display = "none";
     }
