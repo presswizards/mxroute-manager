@@ -143,11 +143,7 @@ function escapeHtml(value) {
         .replace(/'/g, "&#39;");
 }
 
-function jsString(value) {
-    return JSON.stringify(String(value ?? ""));
-}
-
-// JSON string safe for double-quoted HTML onclick attributes (jsString breaks nested quotes).
+// JSON string safe for double-quoted HTML onclick attributes.
 function jsAttrString(value) {
     return escapeHtml(JSON.stringify(String(value ?? "")));
 }
@@ -251,8 +247,9 @@ function invalidateApiCache(urlPrefix) {
 }
 
 function invalidateDomainCache(domain) {
+    // Domains are validated to simple hostnames, so URL building never encodes them
+    // differently; a single raw prefix covers every per-domain cache key.
     invalidateApiCache(`/api/domains/${domain}`);
-    invalidateApiCache(`/api/domains/${encodeURIComponent(domain)}`);
     domainRowCache.delete(domain);
 }
 
@@ -287,6 +284,26 @@ function setCellRefreshing(cellEl, refreshing) {
         }
     } else if (indicator) {
         indicator.remove();
+    }
+}
+
+// Shared skeleton for table loaders: loading placeholder -> cachedFetch (with
+// refresh indicator + background revalidation) -> render -> error row. Each caller
+// supplies its own firstLoad heuristic, render fn, and placeholder/error markup.
+async function fetchCachedList({ url, tbody, card, force, firstLoad, render, loadingHtml, errorHtml }) {
+    if (firstLoad) tbody.innerHTML = loadingHtml;
+    try {
+        const result = await cachedFetch(url, {
+            force,
+            onRefreshStart: () => setElementRefreshing(card, true),
+            onRefreshEnd: () => setElementRefreshing(card, false),
+            onUpdated: render,
+        });
+        render(result);
+    } catch (err) {
+        if (firstLoad) {
+            tbody.innerHTML = typeof errorHtml === "function" ? errorHtml(err) : errorHtml;
+        }
     }
 }
 
@@ -346,6 +363,7 @@ function hasLoadedContent(el) {
 }
 
 // Show Toast Alerts
+let alertDismissTimer = null;
 function showAlert(type, message) {
     const banner = document.getElementById("alert-banner");
     const icon = document.getElementById("alert-banner-icon");
@@ -358,12 +376,20 @@ function showAlert(type, message) {
     
     banner.classList.add("show");
     
+    if (alertDismissTimer) {
+        clearTimeout(alertDismissTimer);
+        alertDismissTimer = null;
+    }
     if (type === "success" || type === "info") {
-        setTimeout(dismissAlert, 5000);
+        alertDismissTimer = setTimeout(dismissAlert, 5000);
     }
 }
 
 function dismissAlert() {
+    if (alertDismissTimer) {
+        clearTimeout(alertDismissTimer);
+        alertDismissTimer = null;
+    }
     document.getElementById("alert-banner").classList.remove("show");
 }
 
@@ -599,8 +625,11 @@ document.querySelectorAll(".nav-item").forEach(item => {
             settings: { title: "Settings", subtitle: "Configure global system parameters, authentication methods, and user interface options." }
         };
         
-        document.getElementById("page-title").textContent = titleMap[tab].title;
-        document.getElementById("page-subtitle").textContent = titleMap[tab].subtitle;
+        const titleInfo = titleMap[tab];
+        if (titleInfo) {
+            document.getElementById("page-title").textContent = titleInfo.title;
+            document.getElementById("page-subtitle").textContent = titleInfo.subtitle;
+        }
         
         // Reload page specific data (uses cache when still fresh)
         if (!activeTabAllowedForDomain()) {
@@ -616,7 +645,9 @@ document.querySelectorAll(".nav-item").forEach(item => {
 // --- 4. Main Data Refresher ---
 async function triggerDataRefresh(options = {}) {
     const { force = false } = options;
-    const activeTab = document.querySelector(".nav-item.active").getAttribute("data-tab");
+    const activeNav = document.querySelector(".nav-item.active");
+    if (!activeNav) return;
+    const activeTab = activeNav.getAttribute("data-tab");
     if (!activeDomain && activeTab !== "delegations" && activeTab !== "domains" && activeTab !== "settings" && activeTab !== "logs") return;
     
     try {
@@ -827,7 +858,7 @@ async function refreshDomainRowDetails(domain, { force = false } = {}) {
     if (!mailCell || !dnsCell) return;
 
     const detailsUrl = `/api/domains/${domain}`;
-    const healthUrl = `/api/domains/${encodeURIComponent(domain)}/dns/setup-health`;
+    const healthUrl = `/api/domains/${domain}/dns/setup-health`;
     const rowCached = domainRowCache.get(domain);
 
     if (rowCached) {
@@ -1126,7 +1157,7 @@ async function loadSetupDnsHealth() {
     }
 
     try {
-        const result = await apiRequest(`/api/domains/${encodeURIComponent(setupWizardDomain)}/dns/setup-health`);
+        const result = await apiRequest(`/api/domains/${setupWizardDomain}/dns/setup-health`);
         if (!result.success || !result.data) {
             throw new Error(result.error?.message || "Health check failed");
         }
@@ -1157,7 +1188,7 @@ async function handleFixDnsRecord(recordType) {
     if (!setupWizardDomain) return;
     try {
         const result = await apiRequest(
-            `/api/domains/${encodeURIComponent(setupWizardDomain)}/dns/fix`,
+            `/api/domains/${setupWizardDomain}/dns/fix`,
             "POST",
             { records: [recordType] }
         );
@@ -1183,7 +1214,7 @@ async function handleFixAllDns() {
     if (btn) btn.disabled = true;
     try {
         const result = await apiRequest(
-            `/api/domains/${encodeURIComponent(setupWizardDomain)}/dns/fix`,
+            `/api/domains/${setupWizardDomain}/dns/fix`,
             "POST",
             {}
         );
@@ -1230,7 +1261,7 @@ async function updateSetupStep3State() {
     if (label) label.innerHTML = `<strong>Domain:</strong> ${escapeHtml(setupWizardDomain)}`;
 
     try {
-        const result = await apiRequest(`/api/domains/${encodeURIComponent(setupWizardDomain)}/dns/setup-health`);
+        const result = await apiRequest(`/api/domains/${setupWizardDomain}/dns/setup-health`);
         const onMxroute = result.data?.on_mxroute;
         if (statusEl) {
             statusEl.innerHTML = onMxroute
@@ -1361,24 +1392,12 @@ async function loadPointersList(domain, { force = false } = {}) {
         }
     };
 
-    if (firstLoad) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading pointers...</td></tr>';
-    }
-
-    try {
-        const url = `/api/domains/${domain}/pointers`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: renderPointers,
-        });
-        renderPointers(result);
-    } catch (err) {
-        if (firstLoad) {
-            tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load pointers</td></tr>`;
-        }
-    }
+    await fetchCachedList({
+        url: `/api/domains/${domain}/pointers`,
+        tbody, card, force, firstLoad, render: renderPointers,
+        loadingHtml: '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading pointers...</td></tr>',
+        errorHtml: '<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load pointers</td></tr>',
+    });
 }
 
 // Add Pointer Modal Open
@@ -1482,6 +1501,7 @@ document.getElementById("form-catch-all").addEventListener("submit", async (e) =
     
     try {
         await apiRequest(`/api/domains/${activeDomain}/catch-all`, "PATCH", { type, address: type === "address" ? address : null });
+        invalidateApiCache(`/api/domains/${activeDomain}/catch-all`);
         showAlert("success", "Catch-All configuration updated.");
     } catch (err) {
         showAlert("error", err.message);
@@ -1610,7 +1630,7 @@ async function loadDnsHealth(domain, { force = false } = {}) {
     const headerStatus = document.getElementById("dns-health-status");
     const checksEl = document.getElementById("dns-health-checks");
     const firstLoad = !hasLoadedContent(checksEl);
-    const url = `/api/domains/${encodeURIComponent(domain)}/dns/health`;
+    const url = `/api/domains/${domain}/dns/health`;
 
     const onRefresh = (refreshing) => {
         setElementRefreshing(card, refreshing);
@@ -1642,6 +1662,13 @@ async function loadDnsHealth(domain, { force = false } = {}) {
 }
 
 // 5.7 Email Accounts Management
+function maskRecoveryEmail(email) {
+    if (!email || !email.includes("@")) return "—";
+    const [local, domain] = email.split("@");
+    if (local.length <= 1) return `*@${domain}`;
+    return `${local[0]}${"*".repeat(Math.min(3, local.length - 1))}@${domain}`;
+}
+
 function renderEmailsList(result, domain) {
     const tbody = document.getElementById("emails-list-tbody");
     tbody.innerHTML = "";
@@ -1657,10 +1684,17 @@ function renderEmailsList(result, domain) {
             const limitVal = account.limit;
             const sentPercent = Math.min(100, (account.sent / account.limit) * 100);
 
+            const recoveryLabel = account.has_recovery_email
+                ? escapeHtml(maskRecoveryEmail(account.recovery_email))
+                : '<span style="color: var(--color-muted);">—</span>';
+
             tr.innerHTML = `
                 <td>
                     <div style="font-weight: 600;">${escapeHtml(account.username)}@${escapeHtml(domain)}</div>
                     ${account.suspended ? '<span style="font-size:0.75rem; color: var(--danger); font-weight:500;">🚫 Suspended</span>' : ''}
+                </td>
+                <td>
+                    <div style="font-size:0.85rem;">${recoveryLabel}</div>
                 </td>
                 <td>
                     <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--color-secondary); margin-bottom: 0.25rem;">
@@ -1682,6 +1716,7 @@ function renderEmailsList(result, domain) {
                 </td>
                 <td style="text-align: right;">
                     <div class="flex-row" style="justify-content: flex-end; gap: 0.5rem;">
+                        <button class="btn btn-secondary btn-sm" onclick="openRecoveryModal(${jsAttrString(account.username)}, ${jsAttrString(account.recovery_email || "")})">📧 Recovery</button>
                         <button class="btn btn-secondary btn-sm" onclick="openPasswordModal(${jsAttrString(account.username)})">🔑 Pass</button>
                         <button class="btn btn-secondary btn-sm" onclick="openQuotaModal(${jsAttrString(account.username)}, ${Number(account.quota)}, ${Number(account.limit)})">⚙️ Limit</button>
                         <button class="btn btn-secondary btn-sm" onclick="handleToggleSuspend(${jsAttrString(account.username)}, ${account.suspended ? "true" : "false"})">${account.suspended ? '🟢 Activate' : '🚫 Suspend'}</button>
@@ -1692,7 +1727,7 @@ function renderEmailsList(result, domain) {
             tbody.appendChild(tr);
         });
     } else {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No mailboxes found for this domain.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--color-muted);">No mailboxes found for this domain.</td></tr>';
     }
     tbody.dataset.loaded = "true";
 }
@@ -1702,24 +1737,13 @@ async function loadEmailsList(domain, { force = false } = {}) {
     const card = tbody?.closest(".glass-card");
     const firstLoad = !tbody.querySelector("tr[data-username]") && tbody.dataset.loaded !== "true";
 
-    if (firstLoad) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Querying mailboxes...</td></tr>';
-    }
-
-    try {
-        const url = `/api/domains/${domain}/email-accounts`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: (updated) => renderEmailsList(updated, domain),
-        });
-        renderEmailsList(result, domain);
-    } catch (err) {
-        if (firstLoad) {
-            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`;
-        }
-    }
+    await fetchCachedList({
+        url: `/api/domains/${domain}/email-accounts`,
+        tbody, card, force, firstLoad,
+        render: (result) => renderEmailsList(result, domain),
+        loadingHtml: '<tr><td colspan="5" style="text-align: center; color: var(--color-muted);">Querying mailboxes...</td></tr>',
+        errorHtml: (err) => `<tr><td colspan="5" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`,
+    });
 }
 
 // Check if domain has mail hosting enabled and update the UI overlay
@@ -1773,25 +1797,35 @@ document.getElementById("form-create-email").addEventListener("submit", async (e
     const passwordInput = document.getElementById("create-email-password");
     const quotaInput = document.getElementById("create-email-quota");
     const limitInput = document.getElementById("create-email-limit");
+    const recoveryInput = document.getElementById("create-email-recovery");
     
     const username = usernameInput.value.trim().toLowerCase();
     const password = passwordInput.value;
     const quota = parseInt(quotaInput.value);
     const limit = parseInt(limitInput.value);
+    const recoveryEmail = recoveryInput?.value.trim().toLowerCase() || "";
     
     if (!username || !password) return;
+
+    if (recoveryEmail && recoveryEmail === `${username}@${activeDomain}`) {
+        showAlert("error", "Recovery email must differ from the mailbox address.");
+        return;
+    }
     
     const submitBtn = document.getElementById("btn-provision-submit");
     submitBtn.disabled = true;
     submitBtn.textContent = "⌛ Provisioning...";
     
     try {
-        await apiRequest(`/api/domains/${activeDomain}/email-accounts`, "POST", {
+        const payload = {
             username,
             password,
             quota,
             limit
-        });
+        };
+        if (recoveryEmail) payload.recovery_email = recoveryEmail;
+
+        await apiRequest(`/api/domains/${activeDomain}/email-accounts`, "POST", payload);
         
         // Show Credentials card
         showMailboxCredentials({
@@ -1807,6 +1841,7 @@ document.getElementById("form-create-email").addEventListener("submit", async (e
         // Reset Form
         usernameInput.value = "";
         passwordInput.value = "";
+        if (recoveryInput) recoveryInput.value = "";
         quotaInput.value = 1024;
         document.getElementById("create-email-quota-val").textContent = "1024 MB";
         limitInput.value = 9600;
@@ -1823,6 +1858,7 @@ document.getElementById("form-create-email").addEventListener("submit", async (e
     } catch (err) {
         showAlert("error", err.message);
     } finally {
+        submitBtn.disabled = false;
         submitBtn.textContent = "Provision Mailbox";
     }
 });
@@ -1912,6 +1948,37 @@ document.getElementById("form-modal-update-pass").addEventListener("submit", asy
     }
 });
 
+function openRecoveryModal(username, currentRecovery = "") {
+    document.getElementById("modal-recovery-username").value = username;
+    document.getElementById("modal-recovery-email-display").textContent = `${username}@${activeDomain}`;
+    document.getElementById("modal-recovery-input").value = currentRecovery || "";
+    openModal("modal-update-recovery");
+}
+
+document.getElementById("form-modal-update-recovery").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const username = document.getElementById("modal-recovery-username").value;
+    const recoveryEmail = document.getElementById("modal-recovery-input").value.trim().toLowerCase();
+    const mailboxEmail = `${username}@${activeDomain}`;
+
+    if (recoveryEmail && recoveryEmail === mailboxEmail) {
+        showAlert("error", "Recovery email must differ from the mailbox address.");
+        return;
+    }
+
+    try {
+        const payload = recoveryEmail ? { recovery_email: recoveryEmail } : { recovery_email: null };
+        await apiRequest(`/api/domains/${activeDomain}/email-accounts/${username}/recovery`, "PATCH", payload);
+        showAlert("success", recoveryEmail
+            ? `Recovery email updated for ${mailboxEmail}.`
+            : `Recovery email removed for ${mailboxEmail}.`);
+        closeModal("modal-update-recovery");
+        await loadEmailsList(activeDomain, { force: true });
+    } catch (err) {
+        showAlert("error", err.message);
+    }
+});
+
 // Quota & Limit Modal Controllers
 function openQuotaModal(username, currentQuota, currentLimit) {
     document.getElementById("modal-quota-username").value = username;
@@ -1987,24 +2054,13 @@ async function loadForwardersList(domain, { force = false } = {}) {
     const card = tbody?.closest(".glass-card");
     const firstLoad = !tbody.querySelector("tr[data-alias]") && tbody.dataset.loaded !== "true";
 
-    if (firstLoad) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading forwarders...</td></tr>';
-    }
-
-    try {
-        const url = `/api/domains/${domain}/forwarders`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: (updated) => renderForwardersList(updated, domain),
-        });
-        renderForwardersList(result, domain);
-    } catch (err) {
-        if (firstLoad) {
-            tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${escapeHtml(err.message)}</td></tr>`;
-        }
-    }
+    await fetchCachedList({
+        url: `/api/domains/${domain}/forwarders`,
+        tbody, card, force, firstLoad,
+        render: (result) => renderForwardersList(result, domain),
+        loadingHtml: '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Loading forwarders...</td></tr>',
+        errorHtml: (err) => `<tr><td colspan="3" style="text-align: center; color: var(--danger);">Failed to load forwarders: ${escapeHtml(err.message)}</td></tr>`,
+    });
 }
 
 // Create Forwarder Submit
@@ -2078,8 +2134,8 @@ async function loadSpamSettings(domain, { force = false } = {}) {
     }
 
     await Promise.all([
-        loadSpamWhitelist(domain, { force }),
-        loadSpamBlacklist(domain, { force }),
+        loadSpamList(domain, "whitelist", { force }),
+        loadSpamList(domain, "blacklist", { force }),
     ]);
 }
 
@@ -2095,19 +2151,20 @@ document.getElementById("form-spam-settings").addEventListener("submit", async (
     
     try {
         await apiRequest(`/api/domains/${activeDomain}/spam/settings`, "PATCH", { high_score: highScore });
+        invalidateApiCache(`/api/domains/${activeDomain}/spam/settings`);
         showAlert("success", "Spam score threshold updated.");
     } catch (err) {
         showAlert("error", err.message);
     }
 });
 
-// Whitelist loader
-async function loadSpamWhitelist(domain, { force = false } = {}) {
-    const tbody = document.getElementById("whitelist-tbody");
+// Spam whitelist/blacklist loader (type is "whitelist" or "blacklist")
+async function loadSpamList(domain, type, { force = false } = {}) {
+    const tbody = document.getElementById(`${type}-tbody`);
     const card = tbody?.closest(".glass-card");
     const firstLoad = !tbody.dataset.loaded;
 
-    const renderWhitelist = (result) => {
+    const render = (result) => {
         tbody.innerHTML = "";
         if (result?.success && result.data?.length > 0) {
             result.data.forEach(entry => {
@@ -2115,114 +2172,42 @@ async function loadSpamWhitelist(domain, { force = false } = {}) {
                 tr.innerHTML = `
                     <td><strong>${escapeHtml(entry)}</strong></td>
                     <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('whitelist', ${jsAttrString(entry)})">×</button>
+                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('${type}', ${jsAttrString(entry)})">×</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
             });
         } else {
-            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">No whitelist entries</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">No ${type} entries</td></tr>`;
         }
         tbody.dataset.loaded = "true";
     };
 
-    if (firstLoad) {
-        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading whitelist...</td></tr>';
-    }
-
-    try {
-        const url = `/api/domains/${domain}/spam/whitelist`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: renderWhitelist,
-        });
-        renderWhitelist(result);
-    } catch (err) {
-        if (firstLoad) {
-            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading whitelist</td></tr>';
-        }
-    }
+    await fetchCachedList({
+        url: `/api/domains/${domain}/spam/${type}`,
+        tbody, card, force, firstLoad, render,
+        loadingHtml: `<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading ${type}...</td></tr>`,
+        errorHtml: `<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading ${type}</td></tr>`,
+    });
 }
 
-// Add Whitelist Entry Submit
-document.getElementById("form-whitelist-add").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const entryInput = document.getElementById("whitelist-entry");
-    const entry = entryInput.value.trim();
-    if (!entry) return;
-    
-    try {
-        await apiRequest(`/api/domains/${activeDomain}/spam/whitelist`, "POST", { entry });
-        showAlert("success", `Added "${entry}" to whitelist.`);
-        entryInput.value = "";
-        await loadSpamWhitelist(activeDomain, { force: true });
-    } catch (err) {
-        showAlert("error", err.message);
-    }
-});
+// Add whitelist/blacklist entry submit
+["whitelist", "blacklist"].forEach(type => {
+    document.getElementById(`form-${type}-add`).addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const entryInput = document.getElementById(`${type}-entry`);
+        const entry = entryInput.value.trim();
+        if (!entry) return;
 
-// Blacklist loader
-async function loadSpamBlacklist(domain, { force = false } = {}) {
-    const tbody = document.getElementById("blacklist-tbody");
-    const card = tbody?.closest(".glass-card");
-    const firstLoad = !tbody.dataset.loaded;
-
-    const renderBlacklist = (result) => {
-        tbody.innerHTML = "";
-        if (result?.success && result.data?.length > 0) {
-            result.data.forEach(entry => {
-                const tr = document.createElement("tr");
-                tr.innerHTML = `
-                    <td><strong>${escapeHtml(entry)}</strong></td>
-                    <td style="text-align: right;">
-                        <button class="btn btn-danger btn-sm btn-icon" onclick="handleRemoveSpamList('blacklist', ${jsAttrString(entry)})">×</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } else {
-            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">No blacklist entries</td></tr>';
+        try {
+            await apiRequest(`/api/domains/${activeDomain}/spam/${type}`, "POST", { entry });
+            showAlert("success", `Added "${entry}" to ${type}.`);
+            entryInput.value = "";
+            await loadSpamList(activeDomain, type, { force: true });
+        } catch (err) {
+            showAlert("error", err.message);
         }
-        tbody.dataset.loaded = "true";
-    };
-
-    if (firstLoad) {
-        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--color-muted);">Loading blacklist...</td></tr>';
-    }
-
-    try {
-        const url = `/api/domains/${domain}/spam/blacklist`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: renderBlacklist,
-        });
-        renderBlacklist(result);
-    } catch (err) {
-        if (firstLoad) {
-            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--danger);">Error loading blacklist</td></tr>';
-        }
-    }
-}
-
-// Add Blacklist Entry Submit
-document.getElementById("form-blacklist-add").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const entryInput = document.getElementById("blacklist-entry");
-    const entry = entryInput.value.trim();
-    if (!entry) return;
-    
-    try {
-        await apiRequest(`/api/domains/${activeDomain}/spam/blacklist`, "POST", { entry });
-        showAlert("success", `Added "${entry}" to blacklist.`);
-        entryInput.value = "";
-        await loadSpamBlacklist(activeDomain, { force: true });
-    } catch (err) {
-        showAlert("error", err.message);
-    }
+    });
 });
 
 // Remove Whitelist/Blacklist Entry
@@ -2238,11 +2223,7 @@ async function handleRemoveSpamList(type, entry) {
         const encodedEntry = encodeURIComponent(entry);
         await apiRequest(`/api/domains/${activeDomain}/spam/${type}/${encodedEntry}`, "DELETE");
         showAlert("success", `Removed "${entry}" from ${type}.`);
-        if (type === "whitelist") {
-            await loadSpamWhitelist(activeDomain, { force: true });
-        } else {
-            await loadSpamBlacklist(activeDomain, { force: true });
-        }
+        await loadSpamList(activeDomain, type, { force: true });
     } catch (err) {
         showAlert("error", err.message);
     }
@@ -2298,7 +2279,10 @@ async function initDomainDropdowns() {
 document.getElementById("global-domain-select").addEventListener("change", async (e) => {
     activeDomain = e.target.value;
     applyDashboardSectionVisibility();
-    if (userHasPermission("dashboard", activeDomain)) {
+    // The dashboard refresh below loads DNS health itself; only pre-load it here
+    // (to keep the header status current) when another tab is active.
+    const activeTab = document.querySelector(".nav-item.active")?.getAttribute("data-tab");
+    if (activeTab !== "dashboard" && userHasPermission("dashboard", activeDomain)) {
         await loadDnsHealth(activeDomain);
     }
     if (!activeTabAllowedForDomain()) {
@@ -2354,7 +2338,7 @@ function updateDelegationPasswordHint() {
     }
 }
 
-async function loadDelegationsPage() {
+async function loadDelegationsPage(options = {}) {
     const listBody = document.getElementById("delegations-list-tbody");
     listBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--color-muted);">Querying access delegations...</td></tr>';
     
@@ -2428,6 +2412,21 @@ async function loadDelegationsPage() {
                 const emailStrong = document.createElement("strong");
                 emailStrong.textContent = item.email;
                 emailTd.appendChild(emailStrong);
+                if (item.notification_email && item.notification_email !== item.email) {
+                    const contactLine = document.createElement("div");
+                    contactLine.style.fontSize = "0.75rem";
+                    contactLine.style.color = "var(--color-secondary)";
+                    contactLine.style.marginTop = "0.25rem";
+                    contactLine.textContent = `Contact: ${item.notification_email}`;
+                    emailTd.appendChild(contactLine);
+                } else if (item.notification_email) {
+                    const contactLine = document.createElement("div");
+                    contactLine.style.fontSize = "0.75rem";
+                    contactLine.style.color = "var(--color-secondary)";
+                    contactLine.style.marginTop = "0.25rem";
+                    contactLine.textContent = "Contact: email login";
+                    emailTd.appendChild(contactLine);
+                }
                 tr.appendChild(emailTd);
                 
                 const domainsTd = document.createElement("td");
@@ -2448,7 +2447,12 @@ async function loadDelegationsPage() {
                 editBtn.className = "btn btn-secondary btn-sm";
                 editBtn.innerHTML = "⚙️ Edit";
                 editBtn.addEventListener("click", () => {
-                    handleEditDelegation(item.email, item.grants || [], item.is_admin || item.domains.includes("*"));
+                    handleEditDelegation(
+                        item.email,
+                        item.grants || [],
+                        item.is_admin || item.domains.includes("*"),
+                        item.contact_email || ""
+                    );
                 });
                 wrapper.appendChild(editBtn);
                 
@@ -2521,8 +2525,10 @@ function collectDelegationGrants() {
     return grants;
 }
 
-function handleEditDelegation(email, grants, isAdmin) {
+function handleEditDelegation(email, grants, isAdmin, contactEmail = "") {
     document.getElementById("delegation-email").value = email;
+    const contactInput = document.getElementById("delegation-contact-email");
+    if (contactInput) contactInput.value = contactEmail || "";
     const passInput = document.getElementById("delegation-password");
     if (passInput) passInput.value = "";
 
@@ -2589,7 +2595,9 @@ window.handleDeleteDelegation = handleDeleteDelegation;
 document.getElementById("form-create-delegation").addEventListener("submit", async (e) => {
     e.preventDefault();
     const emailInput = document.getElementById("delegation-email");
+    const contactInput = document.getElementById("delegation-contact-email");
     const email = emailInput.value.trim().toLowerCase();
+    const contactEmail = contactInput ? contactInput.value.trim().toLowerCase() : "";
     const passInput = document.getElementById("delegation-password");
     const password = passInput ? passInput.value : "";
     const adminCb = document.getElementById("delegation-admin-cb");
@@ -2617,6 +2625,7 @@ document.getElementById("form-create-delegation").addEventListener("submit", asy
     try {
         const payload = {
             email,
+            contact_email: contactEmail || null,
             domains: isAdmin ? ["*"] : grants.map(grant => grant.domain),
             grants: isAdmin ? [] : grants,
         };
@@ -2625,6 +2634,7 @@ document.getElementById("form-create-delegation").addEventListener("submit", asy
         await apiRequest("/api/admin/delegations", "POST", payload);
         showAlert("success", `Permissions updated for ${email}.`);
         emailInput.value = "";
+        if (contactInput) contactInput.value = "";
         if (passInput) passInput.value = "";
         if (adminCb) adminCb.checked = false;
         document.getElementById("delegation-permissions-matrix")?.style.setProperty("display", "flex");
@@ -2745,18 +2755,37 @@ document.addEventListener("DOMContentLoaded", async () => {
                 MX_USER: document.getElementById("setting-mx-user").value.trim(),
                 CF_ACCOUNT_ID: document.getElementById("setting-cf-account-id").value.trim(),
                 ADMIN_USER: document.getElementById("setting-admin-user").value.trim(),
+                MAILBOX_RESET_ENABLED: document.getElementById("setting-mailbox-reset-enabled").value,
+                RESET_SMTP_HOST: document.getElementById("setting-reset-smtp-host").value.trim(),
+                RESET_SMTP_PORT: document.getElementById("setting-reset-smtp-port").value.trim(),
+                RESET_SMTP_USER: document.getElementById("setting-reset-smtp-user").value.trim(),
+                RESET_SMTP_FROM: document.getElementById("setting-reset-smtp-from").value.trim(),
+                RESET_SMTP_USE_TLS: document.getElementById("setting-reset-smtp-use-tls").value,
             };
 
             const newAdminPassword = document.getElementById("setting-admin-password").value;
             if (newAdminPassword.trim()) {
                 payload.ADMIN_PASSWORD = newAdminPassword;
             }
+
+            const newSmtpPassword = document.getElementById("setting-reset-smtp-password").value;
+            if (newSmtpPassword.trim()) {
+                payload.RESET_SMTP_PASSWORD = newSmtpPassword;
+            }
             
             try {
+                const contactSaved = await saveAdminContactEmail();
+                if (!contactSaved) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = "💾 Save System Settings";
+                    return;
+                }
+
                 const res = await apiRequest("/api/admin/settings", "POST", payload);
                 if (res.success) {
                     showAlert("success", "System settings successfully updated!");
                     document.getElementById("setting-admin-password").value = "";
+                    document.getElementById("setting-reset-smtp-password").value = "";
                     await loadSettingsPage();
                 } else {
                     showAlert("error", res.error.message || "Failed to update system settings.");
@@ -2766,6 +2795,30 @@ document.addEventListener("DOMContentLoaded", async () => {
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.textContent = "💾 Save System Settings";
+            }
+        });
+    }
+
+    const testSmtpBtn = document.getElementById("btn-test-smtp-settings");
+    if (testSmtpBtn) {
+        testSmtpBtn.addEventListener("click", async () => {
+            testSmtpBtn.disabled = true;
+            testSmtpBtn.textContent = "⌛ Sending...";
+            try {
+                const contactSaved = await saveAdminContactEmail();
+                if (!contactSaved) return;
+
+                const result = await apiRequest("/api/admin/settings/test-smtp", "POST", collectSmtpTestPayload());
+                if (result.success) {
+                    showAlert("success", result.message || "Test email sent.");
+                } else {
+                    showAlert("error", result.error?.message || "Failed to send test email.");
+                }
+            } catch (err) {
+                showAlert("error", err.message);
+            } finally {
+                testSmtpBtn.textContent = "✉️ Send Test Email";
+                renderSmtpTestStatus(currentUser);
             }
         });
     }
@@ -2813,6 +2866,60 @@ function renderSecretStatus(elementId, configured, envLabel = "environment") {
         : `<span class="status-indicator danger"><span class="dot"></span> Not configured</span>`;
 }
 
+function renderSmtpTestStatus(user) {
+    const statusEl = document.getElementById("setting-smtp-test-status");
+    const testBtn = document.getElementById("btn-test-smtp-settings");
+    if (!statusEl || !testBtn) return;
+
+    const notificationEmail = user?.notification_email;
+    if (notificationEmail) {
+        statusEl.innerHTML = `<span class="status-indicator success"><span class="dot"></span> Test emails will be sent to <strong>${escapeHtml(notificationEmail)}</strong></span>`;
+        testBtn.disabled = false;
+    } else {
+        statusEl.innerHTML = `<span class="status-indicator danger"><span class="dot"></span> Add a contact email below (or sign in with an email address) to send test emails.</span>`;
+        testBtn.disabled = true;
+    }
+}
+
+function collectSmtpTestPayload() {
+    const payload = {
+        RESET_SMTP_HOST: document.getElementById("setting-reset-smtp-host").value.trim(),
+        RESET_SMTP_PORT: document.getElementById("setting-reset-smtp-port").value.trim(),
+        RESET_SMTP_USER: document.getElementById("setting-reset-smtp-user").value.trim(),
+        RESET_SMTP_FROM: document.getElementById("setting-reset-smtp-from").value.trim(),
+        RESET_SMTP_USE_TLS: document.getElementById("setting-reset-smtp-use-tls").value,
+    };
+    const smtpPassword = document.getElementById("setting-reset-smtp-password").value;
+    if (smtpPassword.trim()) {
+        payload.RESET_SMTP_PASSWORD = smtpPassword;
+    }
+    return payload;
+}
+
+async function saveAdminContactEmail() {
+    const input = document.getElementById("setting-admin-contact-email");
+    if (!input) return true;
+
+    const nextValue = input.value.trim().toLowerCase();
+    const currentValue = (currentUser?.contact_email || "").toLowerCase();
+    if (nextValue === currentValue) return true;
+
+    const result = await apiRequest("/api/me/profile", "PATCH", {
+        contact_email: nextValue || null,
+    });
+    if (result?.success) {
+        currentUser = {
+            ...currentUser,
+            contact_email: result.data?.contact_email || null,
+            notification_email: result.data?.notification_email || null,
+        };
+        renderSmtpTestStatus(currentUser);
+        return true;
+    }
+    showAlert("error", result?.error?.message || "Failed to save contact email.");
+    return false;
+}
+
 async function loadSettingsPage() {
     // Refresh theme active selector highlighted state
     const activeTheme = localStorage.getItem("workspace-theme") || "emerald";
@@ -2850,6 +2957,25 @@ async function loadSettingsPage() {
                     settings.ADMIN_PASSWORD_configured,
                     "secure hash"
                 );
+
+                document.getElementById("setting-mailbox-reset-enabled").value = settings.MAILBOX_RESET_ENABLED || "false";
+                document.getElementById("setting-reset-smtp-host").value = settings.RESET_SMTP_HOST || "";
+                document.getElementById("setting-reset-smtp-port").value = settings.RESET_SMTP_PORT || "587";
+                document.getElementById("setting-reset-smtp-user").value = settings.RESET_SMTP_USER || "";
+                document.getElementById("setting-reset-smtp-from").value = settings.RESET_SMTP_FROM || "";
+                document.getElementById("setting-reset-smtp-use-tls").value = settings.RESET_SMTP_USE_TLS || "true";
+                document.getElementById("setting-reset-smtp-password").value = "";
+                renderSecretStatus(
+                    "setting-reset-smtp-password-status",
+                    settings.RESET_SMTP_PASSWORD_configured,
+                    "configured"
+                );
+
+                const contactInput = document.getElementById("setting-admin-contact-email");
+                if (contactInput) {
+                    contactInput.value = currentUser?.contact_email || "";
+                }
+                renderSmtpTestStatus(currentUser);
             }
         } catch (err) {
             showAlert("error", `Failed to load settings: ${err.message}`);
