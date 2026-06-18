@@ -71,15 +71,12 @@ function applyDashboardSectionVisibility() {
     const statsGrid = document.querySelector("#tab-dashboard .stats-grid");
     const quotaCard = document.getElementById("dash-quota-card");
     const dnsHealthCard = document.getElementById("dns-health-card");
-    const dnsRecordsCard = document.getElementById("dns-records-card");
     const mailToggle = document.getElementById("btn-toggle-mail-hosting");
     const hasDashboard = userHasPermission("dashboard", activeDomain);
-    const hasDns = userHasPermission("dns", activeDomain);
 
     if (statsGrid) statsGrid.style.display = hasDashboard ? "" : "none";
     if (quotaCard) quotaCard.style.display = currentUser?.is_admin && hasDashboard ? "" : "none";
     if (dnsHealthCard) dnsHealthCard.style.display = hasDashboard ? "" : "none";
-    if (dnsRecordsCard) dnsRecordsCard.style.display = (hasDashboard || hasDns) ? "" : "none";
     if (mailToggle) mailToggle.style.display = currentUser?.is_admin ? "" : "none";
 }
 
@@ -373,9 +370,6 @@ function hasLoadedContent(el) {
     if (el.dataset.loaded === "true") return true;
     if (el.id === "domains-list-tbody") return !!el.querySelector("tr[data-domain]");
     if (el.id === "dns-health-checks") return el.children.length > 0;
-    if (el.id === "dns-mx-container") {
-        return !!el.querySelector(".copyable-code") || el.textContent.trim() !== "Loading DNS configuration...";
-    }
     return el.textContent.trim() !== "" && el.textContent.trim() !== "--";
 }
 
@@ -677,9 +671,6 @@ async function triggerDataRefresh(options = {}) {
                     }
                     tasks.push(loadDomainDetails(activeDomain, { force }));
                     tasks.push(loadDnsHealth(activeDomain, { force }));
-                }
-                if (userHasAnyPermission(["dashboard", "dns"], activeDomain)) {
-                    tasks.push(loadDNSInfo(activeDomain, { force }));
                 }
                 applyDashboardSectionVisibility();
                 await Promise.all(tasks);
@@ -1797,64 +1788,6 @@ document.getElementById("form-catch-all").addEventListener("submit", async (e) =
         showAlert("error", err.message);
     }
 });
-
-// 5.6 DNS Configuration Info
-function renderDNSInfo(result) {
-    const mxContainer = document.getElementById("dns-mx-container");
-    const spfEl = document.getElementById("dns-spf");
-    const dkimEl = document.getElementById("dns-dkim");
-    const dmarcEl = document.getElementById("dns-dmarc");
-
-    if (!result?.success || !result.data) return;
-
-    const data = result.data;
-
-    if (data.mx_records && data.mx_records.length > 0) {
-        mxContainer.innerHTML = "";
-        data.mx_records.forEach((mx, index) => {
-            const rowId = `mx-rec-${index}`;
-            const mxRow = document.createElement("div");
-            mxRow.className = "copyable-code mb-2";
-            mxRow.innerHTML = `
-                <span><strong>Priority ${escapeHtml(mx.priority)}:</strong> <span id="${rowId}">${escapeHtml(mx.hostname)}</span></span>
-                <button class="copy-btn" onclick="copyText('${rowId}')">Copy</button>
-            `;
-            mxContainer.appendChild(mxRow);
-        });
-    } else {
-        mxContainer.innerHTML = `<div style="color: var(--color-muted);">No MX records reported by API.</div>`;
-    }
-
-    spfEl.textContent = data.spf ? data.spf.value : "v=spf1 include:mxroute.com -all";
-    dkimEl.textContent = data.dkim ? data.dkim.value : "No DKIM key available";
-    if (dmarcEl) {
-        dmarcEl.textContent = data.dmarc ? data.dmarc.value : "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;";
-    }
-    mxContainer.dataset.loaded = "true";
-}
-
-async function loadDNSInfo(domain, { force = false } = {}) {
-    if (!domain) return;
-    const card = document.getElementById("dns-records-card");
-    const mxContainer = document.getElementById("dns-mx-container");
-    const firstLoad = !hasLoadedContent(mxContainer);
-
-    try {
-        const url = `/api/domains/${domain}/dns`;
-        const result = await cachedFetch(url, {
-            force,
-            onRefreshStart: () => setElementRefreshing(card, true),
-            onRefreshEnd: () => setElementRefreshing(card, false),
-            onUpdated: renderDNSInfo,
-        });
-        renderDNSInfo(result);
-    } catch (err) {
-        if (firstLoad) {
-            mxContainer.innerHTML = `<div style="color: var(--danger);">Failed to pull DNS info from MXroute.</div>`;
-            document.getElementById("dns-dkim").textContent = "Error loading DKIM key";
-        }
-    }
-}
 
 function updateDnsHealthHeader(health) {
     const statusEl = document.getElementById("dns-health-status");
