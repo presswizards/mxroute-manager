@@ -17,6 +17,13 @@
 | [Access control](access-control.md) | Delegated users, permissions, admin vs delegated operations |
 | [Mailbox password reset](password-reset.md) | Login-page reset and branded per-domain portals |
 
+## UI reference
+
+| Guide | Description |
+| --- | --- |
+| [App tour](app-tour.md) | Screenshots of every main tab, modals, and reset portal |
+| [Themes](themes.md) | All 10 workspace themes on the login screen |
+
 ## Development
 
 | Guide | Description |
@@ -44,6 +51,8 @@ Feature overview and roadmap: [main README](../README.md).
 | [Local admin password](admin-password.md) | Break-glass admin credentials |
 | [Access control](access-control.md) | Delegated users and permissions |
 | [Password reset](password-reset.md) | Mailbox self-service reset |
+| [App tour](app-tour.md) | UI screenshots and modals |
+| [Themes](themes.md) | Login screen theme gallery |
 | [Reverse proxy](reverse-proxy.md) | TLS and Nginx Proxy Manager |
 | [Testing](testing.md) | Test suite layout and how to run it |
 | [Main README](../README.md) | Project overview, features, quickstart |

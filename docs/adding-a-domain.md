@@ -52,7 +52,7 @@ The TXT verification record in Cloudflare hasn't been created yet:
 2. Watch the **Setup Progress** log at the bottom of Step 2. It should report the TXT record as added.
 3. Click **Recheck** if you want to refresh the grid after DNS propagates.
 
-![After verification TXT is deployed](images/adding-a-domain/06-step2-after-fix-verification.png)
+![After verification TXT is deployed](images/adding-a-domain/03-step2-after-fix-verification.png)
 
 Public DNS can take a minute to update. If **Recheck** still fails, wait and try again.
 
@@ -66,9 +66,9 @@ Step 3 registers the domain with MXroute and generates per-domain mail settings 
 2. Click **Register Domain on MXroute**.
 3. Wait for the success state. If registration fails, the UI usually points you back to Step 2 (often verification TXT still missing in public DNS).
 
-![Step 3 before registration](images/adding-a-domain/03-step3-before-register.png)
+![Step 3 before registration](images/adding-a-domain/04-step3-before-register.png)
 
-![Step 3: registration succeeded](images/adding-a-domain/07-step3-register-success.png)
+![Step 3: registration succeeded](images/adding-a-domain/05-step3-register-success.png)
 
 After success, click **Return to Step 2 - Add Mail DNS** (or use **Back to DNS Checks**) to configure mail records.
 
@@ -76,7 +76,7 @@ After success, click **Return to Step 2 - Add Mail DNS** (or use **Back to DNS C
 
 Once the domain is registered, Step 2 shows the full mail DNS grid. MX, SPF, DKIM, and DMARC should now have expected values from MXroute.
 
-![Step 2: mail DNS before fixes](images/adding-a-domain/08-step2-mail-dns-before-fix-all.png)
+![Step 2: mail DNS before fixes](images/adding-a-domain/06-step2-mail-dns-before-fix-all.png)
 
 ### Fix all mail records
 
@@ -84,7 +84,7 @@ Once the domain is registered, Step 2 shows the full mail DNS grid. MX, SPF, DKI
 2. Review **Setup Progress** as each record is created or skipped if already correct.
 3. Click **Recheck** until the grid shows all required records healthy.
 
-![Step 2: after Fix All Missing](images/adding-a-domain/09-step2-after-fix-all-dns.png)
+![Step 2: after Fix All Missing](images/adding-a-domain/07-step2-after-fix-all-dns.png)
 
 The wizard is idempotent: re-running fixes is safe. Existing correct records are skipped.
 
@@ -94,7 +94,7 @@ When everything looks good, click **Finish Setup**.
 
 If mail routing isn't turned on by itself, though after registration of a domain with MXroute it usually is on the **Dashboard**, select the domain and use **Mail Hosting Status** toggle button to enable hosting for that domain.
 
-![Mail hosting enabled on the Dashboard](images/adding-a-domain/13-mail-hosting-enabled.png)
+![Mail hosting enabled on the Dashboard](images/adding-a-domain/08-mail-hosting-enabled.png)
 
 
 ## Quick reference
