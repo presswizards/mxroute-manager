@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ LOG_DIR = os.getenv(
 
 DEFAULT_LOG_LIMIT = 100
 MAX_LOG_LIMIT = 500
+_logger = logging.getLogger(__name__)
 _LOG_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TAIL_CHUNK_SIZE = 8192
 
@@ -29,6 +31,14 @@ def write_audit_log(action, user_email, target="", details=None):
     }
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    try:
+        from services.notifications import dispatch_audit_notification
+
+        dispatch_audit_notification(entry)
+    except Exception as exc:
+        # ponytail: never break audit logging if notifications fail to import/run
+        _logger.debug("audit notification dispatch skipped: %s", exc)
 
 
 def normalize_log_limit(limit):

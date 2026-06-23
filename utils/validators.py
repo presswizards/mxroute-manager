@@ -12,6 +12,31 @@ _PASSWORD_REQUIREMENTS = {
 }
 
 
+def nested_dict_get(mapping, *keys, default=None):
+    """Walk nested dict keys without chained .get(..., {}) defaults."""
+    node = mapping
+    for index, key in enumerate(keys):
+        if not isinstance(node, dict):
+            return default
+        if index == len(keys) - 1:
+            return node.get(key, default)
+        node = node.get(key)
+        if node is None:
+            return default
+    return default
+
+
+def public_https_origin(host: str) -> str:
+    """Build a public https origin for a host (env override for non-https dev)."""
+    import os
+
+    host = (host or "").strip()
+    if not host:
+        return ""
+    scheme = (os.getenv("MXM_PUBLIC_URL_SCHEME") or "https").strip().rstrip(":")
+    return f"{scheme}://{host}"
+
+
 def validate_domain(domain):
     if not domain or not isinstance(domain, str):
         return False
@@ -64,10 +89,27 @@ def validate_mailbox_password(password):
     return all(pattern.search(password) for pattern in _PASSWORD_REQUIREMENTS.values())
 
 
-_RESERVED_SUBDOMAIN_PREFIXES = frozenset({
-    "mail", "www", "webmail", "smtp", "imap", "pop", "pop3", "autodiscover",
-    "ftp", "mx", "ns", "ns1", "ns2", "_dmarc", "dmarc", "dkim", "@",
-})
+_RESERVED_SUBDOMAIN_PREFIXES = frozenset(
+    {
+        "mail",
+        "www",
+        "webmail",
+        "smtp",
+        "imap",
+        "pop",
+        "pop3",
+        "autodiscover",
+        "ftp",
+        "mx",
+        "ns",
+        "ns1",
+        "ns2",
+        "_dmarc",
+        "dmarc",
+        "dkim",
+        "@",
+    }
+)
 
 _DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -97,4 +139,3 @@ def validate_recovery_email(mailbox_email, recovery_email):
     if recovery_email == mailbox_email:
         return False, "Recovery email must differ from the mailbox address."
     return True, ""
-
