@@ -141,6 +141,18 @@ def mask_notification_settings_for_response(config):
                 (config.get("dns_monitor") or {}).get("interval_hours") or 24
             ),
         },
+        "quota_monitor": {
+            "enabled": bool((config.get("quota_monitor") or {}).get("enabled")),
+            "interval_hours": int(
+                (config.get("quota_monitor") or {}).get("interval_hours") or 12
+            ),
+            "quota_percent": int(
+                (config.get("quota_monitor") or {}).get("quota_percent") or 90
+            ),
+            "send_percent": int(
+                (config.get("quota_monitor") or {}).get("send_percent") or 90
+            ),
+        },
     }
     for target in config.get("targets") or []:
         url = str((target or {}).get("url") or "").strip()

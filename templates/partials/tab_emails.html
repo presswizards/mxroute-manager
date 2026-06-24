@@ -115,7 +115,10 @@
 
     <!-- List Email Accounts -->
     <div class="glass-card" id="emails-list-card">
-        <h3 class="card-title">{{ icon('clipboard') }} Active Mailboxes</h3>
+        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+            <span>{{ icon('clipboard') }} Active Mailboxes</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-export-mailboxes-csv">{{ icon('download') }} Export CSV</button>
+        </div>
         <div id="emails-table-controls"></div>
         <div class="table-container">
             <table>
@@ -129,9 +132,8 @@
                     </tr>
                 </thead>
                 <tbody id="emails-list-tbody">
-                    <tr>
-                        <td colspan="5" style="text-align: center; color: var(--color-muted);">Select a domain
-                            to see email accounts.</td>
+                    <tr class="table-empty-row">
+                        <td colspan="5"><div class="table-empty-message">Select a domain to see email accounts.</div></td>
                     </tr>
                 </tbody>
             </table>

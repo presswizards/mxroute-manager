@@ -26,7 +26,7 @@ function renderDomainsTableView() {
                     : "No domains found on this account.";
                 setTrustedHtml(
                     tbody,
-                    `<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">${escapeHtml(message)}</td></tr>`,
+                    tablePlaceholderRowHtml(4, message),
                 );
                 return;
             }
@@ -37,53 +37,70 @@ function renderDomainsTableView() {
     return page;
 }
 
-async function refreshDomainRowDetails(domain, { force = false } = {}) {
+async function ensureDomainRowStatus(domain, { force = false, includeMailboxes = false } = {}) {
+    const detailsUrl = `/api/domains/${domain}`;
+    const healthUrl = `/api/domains/${domain}/dns/setup-health`;
+    const mailboxesUrl = `/api/domains/${domain}/email-accounts`;
     const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
     const mailCell = document.getElementById(`domain-mail-${safeId}`);
     const dnsCell = document.getElementById(`domain-dns-${safeId}`);
-    if (!mailCell || !dnsCell) return;
 
-    const detailsUrl = `/api/domains/${domain}`;
-    const healthUrl = `/api/domains/${domain}/dns/setup-health`;
-    const rowCached = domainRowCache.get(domain);
+    const needsDetails = force || !isCacheFresh(detailsUrl);
+    const needsHealth = force || !isCacheFresh(healthUrl);
+    const needsMailboxes = includeMailboxes && (force || !isCacheFresh(mailboxesUrl));
 
-    if (rowCached) {
-        setTrustedHtml(mailCell, rowCached.mailHtml);
-        setTrustedHtml(dnsCell, rowCached.dnsHtml);
-        renderDomainActionsCell(domain);
+    const cached = domainRowCache.get(domain);
+    if (!needsDetails && !needsHealth && !needsMailboxes) {
+        return cached;
     }
 
-    const needsRefresh = force || !isCacheFresh(detailsUrl) || !isCacheFresh(healthUrl);
-    if (!needsRefresh) return;
+    if (cached) {
+        paintDomainRowCells(domain, cached);
+    }
 
-    const applyFromCache = () => {
-        const dEntry = apiCache.get(detailsUrl);
-        const hEntry = apiCache.get(healthUrl);
-        if (dEntry?.data || hEntry?.data) {
-            applyDomainRowDetails(domain, dEntry?.data, hEntry?.data);
-        }
-    };
+    const detailPromise = needsDetails
+        ? cachedFetch(detailsUrl, {
+            force,
+            onRefreshStart: () => setCellRefreshing(mailCell, true),
+            onRefreshEnd: () => setCellRefreshing(mailCell, false),
+        })
+        : Promise.resolve(apiCache.get(detailsUrl)?.data);
+    const healthPromise = needsHealth
+        ? cachedFetch(healthUrl, {
+            force,
+            onRefreshStart: () => setCellRefreshing(dnsCell, true),
+            onRefreshEnd: () => setCellRefreshing(dnsCell, false),
+        })
+        : Promise.resolve(apiCache.get(healthUrl)?.data);
+    const mailboxPromise = needsMailboxes
+        ? cachedFetch(mailboxesUrl, { force })
+        : Promise.resolve(null);
 
     try {
-        await Promise.all([
-            cachedFetch(detailsUrl, {
-                force,
-                onRefreshStart: () => setCellRefreshing(mailCell, true),
-                onRefreshEnd: () => setCellRefreshing(mailCell, false),
-                onUpdated: applyFromCache,
-            }),
-            cachedFetch(healthUrl, {
-                force,
-                onRefreshStart: () => setCellRefreshing(dnsCell, true),
-                onRefreshEnd: () => setCellRefreshing(dnsCell, false),
-                onUpdated: applyFromCache,
-            }),
+        const [detailsRes, healthRes, mailboxRes] = await Promise.all([
+            detailPromise,
+            healthPromise,
+            mailboxPromise,
         ]);
-        applyFromCache();
+
+        if (needsDetails || needsHealth) {
+            applyDomainRowDetails(domain, detailsRes, healthRes);
+        }
+
+        if (needsMailboxes && mailboxRes?.success && Array.isArray(mailboxRes.data)) {
+            const prev = domainRowCache.get(domain) || {};
+            domainRowCache.set(domain, { ...prev, mailboxCount: mailboxRes.data.length });
+        }
     } catch (err) {
         setCellRefreshing(mailCell, false);
         setCellRefreshing(dnsCell, false);
     }
+
+    return domainRowCache.get(domain);
+}
+
+async function refreshDomainRowDetails(domain, { force = false } = {}) {
+    await ensureDomainRowStatus(domain, { force, includeMailboxes: false });
 }
 
 function renderDomainsTableRows(domains) {
@@ -177,7 +194,7 @@ async function loadDomainsList({ force = false } = {}) {
         }
     } catch (err) {
         if (firstLoad || !hasRows) {
-            setTrustedHtml(tbody, `<tr><td colspan="4" style="text-align: center; color: var(--danger); font-weight: 500;">Failed to load domains: ${escapeHtml(err.message)}</td></tr>`);
+            setTrustedHtml(tbody, tablePlaceholderRowHtml(4, `Failed to load domains: ${err.message}`, { error: true }));
         } else {
             showAlert("error", `Failed to refresh domains: ${err.message}`);
         }

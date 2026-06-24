@@ -39,8 +39,14 @@ function bumpApiActivity(delta) {
     setApiActivityActive(pendingApiActivity > 0);
 }
 
+function tablePlaceholderRowHtml(colspan, text, { error = false } = {}) {
+    const rowClass = error ? "table-empty-row table-empty-row--error" : "table-empty-row";
+    const msgClass = error ? "table-empty-message is-error" : "table-empty-message";
+    return `<tr class="${rowClass}"><td colspan="${colspan}"><div class="${msgClass}">${escapeHtml(text)}</div></td></tr>`;
+}
+
 function loadingRowHtml(colspan, text) {
-    return `<tr><td colspan="${colspan}" style="text-align: center; color: var(--color-muted);">${escapeHtml(text)}</td></tr>`;
+    return tablePlaceholderRowHtml(colspan, text);
 }
 
 function rememberBtnIdle(btn) {

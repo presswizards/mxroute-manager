@@ -101,6 +101,32 @@ The monitor runs inside the app process (daemon thread). It respects Cloudflare/
 
 For automation that fixes DNS without waiting for email, admins can use **Fix unhealthy DNS** on the Domains tab or `POST /api/cloudflare/dns/fix-bulk` - see [HTTP API](api.md).
 
+## Mailbox usage monitoring
+
+Optional background checks scan every mailbox on the account for storage and daily send usage. When a mailbox crosses your thresholds (default 90%), or drops back below them after cooling off, the app emits audit events and Apprise notifications.
+
+Configure under **Notifications**:
+
+| Setting | Purpose |
+| --- | --- |
+| **Enable scheduled mailbox usage checks** | Turn the background loop on or off |
+| **Check interval (hours)** | How often to scan (bounded in the UI) |
+| **Storage alert at (%)** | Quota usage threshold (skipped for unlimited quota) |
+| **Daily send alert at (%)** | Outbound send threshold |
+
+Subscribe to these audit actions if you want alerts:
+
+| Action | When it fires |
+| --- | --- |
+| `mailbox.quota_alert` | Storage usage crossed the threshold |
+| `mailbox.quota_recovered` | Storage usage dropped below threshold again |
+| `mailbox.send_limit_alert` | Daily send usage crossed the threshold |
+| `mailbox.send_limit_recovered` | Daily send usage dropped below threshold again |
+
+The monitor shares the same background thread tick as DNS health monitoring. State is stored in SQLite so you only get alerts on transitions.
+
+See also [Bulk mailbox CSV](bulk-mailbox-csv.md) for import/export workflows.
+
 ## Troubleshooting
 
 | Issue | Check |

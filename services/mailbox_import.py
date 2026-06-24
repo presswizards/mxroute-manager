@@ -1,6 +1,15 @@
 """CSV / bulk mailbox import validation."""
 
 from services.mailbox_provision import DEFAULT_LIMIT, DEFAULT_QUOTA, MAX_IMPORT_ROWS
+
+MAILBOX_CSV_COLUMNS = (
+    "username",
+    "password",
+    "quota",
+    "limit",
+    "recovery_email",
+    "domain",
+)
 from utils.auth_helpers import has_permission, is_user_admin
 from utils.validators import (
     validate_domain,

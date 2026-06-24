@@ -1,12 +1,61 @@
+const MAILBOX_CSV_COLUMNS = [
+    "username",
+    "password",
+    "quota",
+    "limit",
+    "recovery_email",
+    "domain",
+];
 const MAILBOX_IMPORT_CONCURRENCY = 3;
 const MAILBOX_IMPORT_TEMPLATE = [
-    "username,password,quota,limit,recovery_email",
+    MAILBOX_CSV_COLUMNS.join(","),
     "alice,Abcd1234!,1024,9600,alice.personal@gmail.com",
     "bob,AnotherPass2!,1024,9600,",
 ].join("\n");
 
 let mailboxImportPreviewRows = [];
 let mailboxImportRunning = false;
+
+function csvEscape(value) {
+    const text = String(value ?? "");
+    if (/[",\n\r]/.test(text)) {
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+}
+
+function buildMailboxExportCsv(accounts, domain) {
+    const header = `${MAILBOX_CSV_COLUMNS.join(",")}\n`;
+    const lines = (accounts || []).map((account) => {
+        const cols = [
+            account.username ?? "",
+            "",
+            account.quota ?? "",
+            account.limit ?? "",
+            account.recovery_email ?? "",
+            domain ?? "",
+        ];
+        return cols.map(csvEscape).join(",");
+    });
+    return header + lines.join("\n");
+}
+
+function downloadMailboxExportCsv() {
+    if (!mailboxesListDomain || !mailboxesListAll?.length) {
+        showAlert("warning", "No mailboxes loaded to export.");
+        return;
+    }
+    const blob = new Blob(
+        [buildMailboxExportCsv(mailboxesListAll, mailboxesListDomain)],
+        { type: "text/csv" },
+    );
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mailboxes-${mailboxesListDomain}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+}
 
 function parseCsvLine(line) {
     const values = [];
@@ -128,7 +177,7 @@ function renderMailboxImportPreview(rows, summary) {
     if (!rows.length) {
         setTrustedHtml(
             tbody,
-            '<tr><td colspan="5" style="text-align: center; color: var(--color-muted);">No rows parsed.</td></tr>',
+            tablePlaceholderRowHtml(5, "No rows parsed."),
         );
         return;
     }
@@ -389,6 +438,8 @@ function openMailboxImportModal() {
     document.getElementById("mailbox-import-domain-hint").textContent = activeDomain;
     openModal("modal-mailbox-import");
 }
+
+document.getElementById("btn-export-mailboxes-csv")?.addEventListener("click", downloadMailboxExportCsv);
 
 document.getElementById("btn-open-mailbox-import")?.addEventListener("click", openMailboxImportModal);
 

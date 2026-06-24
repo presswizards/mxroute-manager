@@ -180,6 +180,23 @@ async function applyNotificationSettingsToForm(data) {
         monitorInterval.value = String(hours);
     }
 
+    const quotaToggle = document.getElementById("setting-quota-monitor-enabled");
+    const quotaInterval = document.getElementById("setting-quota-monitor-interval");
+    const quotaPercent = document.getElementById("setting-quota-monitor-quota-percent");
+    const sendPercent = document.getElementById("setting-quota-monitor-send-percent");
+    if (quotaToggle) {
+        quotaToggle.checked = Boolean(data.quota_monitor?.enabled);
+    }
+    if (quotaInterval) {
+        quotaInterval.value = String(Number(data.quota_monitor?.interval_hours || 12));
+    }
+    if (quotaPercent) {
+        quotaPercent.value = String(Number(data.quota_monitor?.quota_percent || 90));
+    }
+    if (sendPercent) {
+        sendPercent.value = String(Number(data.quota_monitor?.send_percent || 90));
+    }
+
     renderNotificationTargets();
     renderNotificationActionsGrid(data.actions || []);
 }
@@ -242,6 +259,12 @@ async function saveNotificationSettings() {
             dns_monitor: {
                 enabled: Boolean(document.getElementById("setting-dns-monitor-enabled")?.checked),
                 interval_hours: Number(document.getElementById("setting-dns-monitor-interval")?.value || 24),
+            },
+            quota_monitor: {
+                enabled: Boolean(document.getElementById("setting-quota-monitor-enabled")?.checked),
+                interval_hours: Number(document.getElementById("setting-quota-monitor-interval")?.value || 12),
+                quota_percent: Number(document.getElementById("setting-quota-monitor-quota-percent")?.value || 90),
+                send_percent: Number(document.getElementById("setting-quota-monitor-send-percent")?.value || 90),
             },
         };
         const result = await apiRequest("/api/admin/notifications", "POST", payload);

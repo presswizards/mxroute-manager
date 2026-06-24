@@ -16,6 +16,7 @@ async function triggerDataRefresh(options = {}) {
                     tasks.push(loadDomainDetails(activeDomain, { force }));
                     tasks.push(loadDnsHealth(activeDomain, { force }));
                 }
+                tasks.push(loadFleetHealth({ force }));
                 applyDashboardSectionVisibility();
                 await Promise.all(tasks);
                 break;
@@ -284,15 +285,9 @@ function renderDomainActionsCell(domain) {
     }));
 }
 
-function applyDomainRowDetails(domain, detailsResult, healthResult) {
-    const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
-    const mailCell = document.getElementById(`domain-mail-${safeId}`);
-    const dnsCell = document.getElementById(`domain-dns-${safeId}`);
-    if (!mailCell || !dnsCell) return;
-
-    const prev = domainRowCache.get(domain) || {};
-    let mailHtml = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
-    let dnsHtml = `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
+function buildDomainRowSnapshot(detailsResult, healthResult, prev = {}) {
+    let mailHtml = prev.mailHtml || `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
+    let dnsHtml = prev.dnsHtml || `<span style="color: var(--color-muted); font-size: 0.85rem;">Unknown</span>`;
     let fixDnsVisible = prev.fixDnsVisible ?? false;
     let mailOn = prev.mailOn ?? null;
     let webmailReady = prev.webmailReady ?? false;
@@ -313,12 +308,26 @@ function applyDomainRowDetails(domain, detailsResult, healthResult) {
         cfConfigured = !!health.cf_configured;
     }
 
-    setTrustedHtml(mailCell, mailHtml);
-    setTrustedHtml(dnsCell, dnsHtml);
+    return { mailHtml, dnsHtml, fixDnsVisible, mailOn, webmailReady, cfConfigured };
+}
 
-    domainRowCache.set(domain, { mailHtml, dnsHtml, fixDnsVisible, mailOn, webmailReady, cfConfigured });
-    renderDomainActionsCell(domain);
-    updateBulkFixDnsButtonVisibility();
+function paintDomainRowCells(domain, snapshot) {
+    const safeId = domain.replace(/[^a-zA-Z0-9-]/g, "-");
+    const mailCell = document.getElementById(`domain-mail-${safeId}`);
+    const dnsCell = document.getElementById(`domain-dns-${safeId}`);
+    if (mailCell) setTrustedHtml(mailCell, snapshot.mailHtml);
+    if (dnsCell) setTrustedHtml(dnsCell, snapshot.dnsHtml);
+    if (mailCell || dnsCell) {
+        renderDomainActionsCell(domain);
+        updateBulkFixDnsButtonVisibility();
+    }
+}
+
+function applyDomainRowDetails(domain, detailsResult, healthResult) {
+    const prev = domainRowCache.get(domain) || {};
+    const snapshot = buildDomainRowSnapshot(detailsResult, healthResult, prev);
+    domainRowCache.set(domain, { ...prev, ...snapshot });
+    paintDomainRowCells(domain, snapshot);
 }
 
 async function handleBulkFixDns() {

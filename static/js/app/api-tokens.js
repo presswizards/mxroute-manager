@@ -113,7 +113,7 @@ function renderApiTokensTable(listBody, tokensRes) {
     if (!rows.length) {
         setTrustedHtml(
             listBody,
-            '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">No API tokens yet.</td></tr>',
+            tablePlaceholderRowHtml(4, "No API tokens yet."),
         );
         return;
     }
@@ -166,7 +166,7 @@ async function loadApiTokensPage(domainsRes = null) {
 
     setTrustedHtml(
         listBody,
-        '<tr><td colspan="4" style="text-align: center; color: var(--color-muted);">Loading API tokens...</td></tr>',
+        loadingRowHtml(4, "Loading API tokens..."),
     );
 
     try {
@@ -183,7 +183,7 @@ async function loadApiTokensPage(domainsRes = null) {
     } catch (err) {
         setTrustedHtml(
             listBody,
-            `<tr><td colspan="4" style="text-align: center; color: var(--danger);">Failed to load API tokens: ${escapeHtml(err.message)}</td></tr>`,
+            tablePlaceholderRowHtml(4, `Failed to load API tokens: ${err.message}`, { error: true }),
         );
     }
 }

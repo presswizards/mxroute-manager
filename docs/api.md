@@ -132,7 +132,7 @@ curl -sS -X POST \
   https://manager.example.com/api/email-accounts/import/preview
 ```
 
-Creation still uses one `POST` per mailbox (the UI caps parallel requests at 3). Download the template from **Email Accounts → Import CSV** in the app.
+Creation still uses one `POST` per mailbox (the UI caps parallel requests at 3). Download the template from **Email Accounts → Import CSV** in the app. Export uses the same columns (passwords left blank). See [Bulk mailbox CSV](bulk-mailbox-csv.md).
 
 ### Fetch IMAP/SMTP settings for a mailbox
 

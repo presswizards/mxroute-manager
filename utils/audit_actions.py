@@ -85,6 +85,30 @@ AUDIT_ACTIONS = [
         "group": "Mailboxes",
     },
     {
+        "id": "mailbox.quota_alert",
+        "label": "Mailbox storage threshold exceeded",
+        "group": "Mailboxes",
+        "description": "Scheduled monitor detected high quota usage",
+    },
+    {
+        "id": "mailbox.quota_recovered",
+        "label": "Mailbox storage usage recovered",
+        "group": "Mailboxes",
+        "description": "Scheduled monitor detected quota usage dropped below threshold",
+    },
+    {
+        "id": "mailbox.send_limit_alert",
+        "label": "Mailbox daily send limit threshold exceeded",
+        "group": "Mailboxes",
+        "description": "Scheduled monitor detected high outbound volume",
+    },
+    {
+        "id": "mailbox.send_limit_recovered",
+        "label": "Mailbox daily send usage recovered",
+        "group": "Mailboxes",
+        "description": "Scheduled monitor detected send usage dropped below threshold",
+    },
+    {
         "id": "mailbox.reset_requested",
         "label": "Password reset requested",
         "group": "Mailboxes",

@@ -974,6 +974,36 @@ tr:hover td {
     background: rgba(255, 255, 255, 0.01);
 }
 
+tr.table-empty-row:hover td {
+    background: transparent;
+}
+
+tr.table-empty-row > td {
+    padding: 0;
+    border-bottom: none;
+}
+
+.table-empty-message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 7rem;
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    color: var(--color-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.table-empty-message.is-error {
+    color: var(--danger);
+}
+
+.table-container:has(tbody > tr.table-empty-row:only-child) .table-empty-message {
+    min-height: 9rem;
+    padding: 3rem 1.5rem;
+}
+
 /* Utility classes & components */
 .flex-row {
     display: flex;

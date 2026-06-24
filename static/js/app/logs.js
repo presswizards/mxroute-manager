@@ -71,7 +71,7 @@ function renderLogsTable() {
     });
 
     if (filteredLogs.length === 0) {
-        setTrustedHtml(tbody, `<tr><td colspan="5" style="text-align: center; color: var(--color-muted); padding: 2rem;">No matching log entries found.</td></tr>`);
+        setTrustedHtml(tbody, tablePlaceholderRowHtml(5, "No matching log entries found."));
         return;
     }
 

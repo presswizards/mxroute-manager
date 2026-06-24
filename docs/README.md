@@ -14,6 +14,7 @@
 | Guide | Description |
 | --- | --- |
 | [Adding a domain](adding-a-domain.md) | Domain wizard: verification, MXroute registration, Cloudflare mail DNS |
+| [Bulk mailbox CSV](bulk-mailbox-csv.md) | Import and export mailboxes in spreadsheet-friendly batches |
 | [Access control](access-control.md) | Delegated users, API tokens, permissions, admin vs delegated operations |
 | [HTTP API](api.md) | Bearer tokens, curl examples, route overview |
 | [Mailbox password reset](password-reset.md) | Login-page reset and branded per-domain portals |

@@ -6,7 +6,7 @@ The **global domain selector** at the top of most tabs sets which domain you are
 
 ## Dashboard
 
-Overview of the active domain: mail hosting toggle, mailbox count, DNS health, and account quota usage.
+Overview of the active domain: mail hosting toggle, mailbox count, DNS health, and account quota usage. With two or more domains, a **Fleet overview** table shows mail routing, DNS status, and mailbox counts across the account (click a row to switch domains).
 
 ![Dashboard](images/app-tour/dashboard.png)
 
@@ -30,7 +30,7 @@ Live portal served at the subdomain after deploy:
 
 ## Email Accounts
 
-Provision mailboxes, view usage and limits, search and paginate the **Active Mailboxes** list, **import many from CSV**, and open per-mailbox actions (including **Client setup** for IMAP/SMTP settings).
+Provision mailboxes, view usage and limits, search and paginate the **Active Mailboxes** list, **import or export CSV**, and open per-mailbox actions (including **Client setup** for IMAP/SMTP settings).
 
 ![Email Accounts tab](images/app-tour/tab-emails.png)
 

@@ -253,7 +253,7 @@ function renderEmailsList(result, domain) {
         const message = mailboxesListAll.length && state?.query?.trim()
             ? "No mailboxes match your search."
             : "No mailboxes found for this domain.";
-        setTrustedHtml(tbody, `<tr><td colspan="5" style="text-align: center; color: var(--color-muted);">${escapeHtml(message)}</td></tr>`);
+        setTrustedHtml(tbody, tablePlaceholderRowHtml(5, message));
     }
     tbody.dataset.loaded = "true";
 }
@@ -277,7 +277,7 @@ async function loadEmailsList(domain, { force = false } = {}) {
             renderMailboxesTableView(domain);
         },
         loadingHtml: loadingRowHtml(5, "Querying mailboxes..."),
-        errorHtml: (err) => `<tr><td colspan="5" style="text-align: center; color: var(--danger);">Failed to load email accounts: ${escapeHtml(err.message)}</td></tr>`,
+        errorHtml: (err) => tablePlaceholderRowHtml(5, `Failed to load email accounts: ${err.message}`, { error: true }),
     });
 }
 

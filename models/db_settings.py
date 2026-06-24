@@ -11,6 +11,7 @@ from models.db_constants import (
     ENV_ONLY_SECRET_KEYS,
     MASKED_SECRET_KEYS,
     NOTIFICATION_SETTINGS_KEY,
+    QUOTA_MONITOR_STATE_KEY,
     SETTINGS_RESPONSE_KEYS,
 )
 
@@ -315,6 +316,7 @@ def _default_notification_settings():
         "targets": [],
         "actions": [],
         "dns_monitor": _default_dns_monitor(),
+        "quota_monitor": _default_quota_monitor(),
     }
 
 
@@ -322,12 +324,33 @@ def _default_dns_monitor():
     return {"enabled": False, "interval_hours": 24}
 
 
-def _clamp_dns_monitor_interval(raw):
+def _default_quota_monitor():
+    return {
+        "enabled": False,
+        "interval_hours": 12,
+        "quota_percent": 90,
+        "send_percent": 90,
+    }
+
+
+def _clamp_monitor_interval(raw, default=24):
     try:
         hours = int(raw)
     except (TypeError, ValueError):
-        hours = 24
+        hours = default
     return max(1, min(168, hours))
+
+
+def _clamp_threshold_percent(raw, default=90):
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(50, min(99, value))
+
+
+def _clamp_dns_monitor_interval(raw):
+    return _clamp_monitor_interval(raw, 24)
 
 
 def get_notification_settings():
@@ -344,6 +367,9 @@ def get_notification_settings():
     monitor_raw = (
         data.get("dns_monitor") if isinstance(data.get("dns_monitor"), dict) else {}
     )
+    quota_raw = (
+        data.get("quota_monitor") if isinstance(data.get("quota_monitor"), dict) else {}
+    )
     return {
         "enabled": bool(data.get("enabled")),
         "targets": data.get("targets") if isinstance(data.get("targets"), list) else [],
@@ -353,6 +379,14 @@ def get_notification_settings():
             "interval_hours": _clamp_dns_monitor_interval(
                 monitor_raw.get("interval_hours")
             ),
+        },
+        "quota_monitor": {
+            "enabled": bool(quota_raw.get("enabled")),
+            "interval_hours": _clamp_monitor_interval(
+                quota_raw.get("interval_hours"), 12
+            ),
+            "quota_percent": _clamp_threshold_percent(quota_raw.get("quota_percent"), 90),
+            "send_percent": _clamp_threshold_percent(quota_raw.get("send_percent"), 90),
         },
     }
 
@@ -393,11 +427,50 @@ def save_dns_health_state(state):
     return normalized
 
 
+def get_quota_monitor_state():
+    raw = get_config_value(QUOTA_MONITOR_STATE_KEY, "")
+    if not raw:
+        return {"last_run_at": None, "mailboxes": {}}
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {"last_run_at": None, "mailboxes": {}}
+    if not isinstance(data, dict):
+        return {"last_run_at": None, "mailboxes": {}}
+    mailboxes = data.get("mailboxes")
+    return {
+        "last_run_at": data.get("last_run_at"),
+        "mailboxes": mailboxes if isinstance(mailboxes, dict) else {},
+    }
+
+
+def save_quota_monitor_state(state):
+    if not isinstance(state, dict):
+        raise ValueError("Quota monitor state must be an object")
+    mailboxes = state.get("mailboxes")
+    normalized = {
+        "last_run_at": state.get("last_run_at"),
+        "mailboxes": mailboxes if isinstance(mailboxes, dict) else {},
+    }
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (QUOTA_MONITOR_STATE_KEY, json.dumps(normalized, ensure_ascii=False)),
+        )
+        conn.commit()
+    invalidate_settings_cache()
+    return normalized
+
+
 def save_notification_settings(config):
     if not isinstance(config, dict):
         raise ValueError("Notification settings must be an object")
     monitor_raw = (
         config.get("dns_monitor") if isinstance(config.get("dns_monitor"), dict) else {}
+    )
+    quota_raw = (
+        config.get("quota_monitor") if isinstance(config.get("quota_monitor"), dict) else {}
     )
     normalized = {
         "enabled": bool(config.get("enabled")),
@@ -412,6 +485,14 @@ def save_notification_settings(config):
             "interval_hours": _clamp_dns_monitor_interval(
                 monitor_raw.get("interval_hours")
             ),
+        },
+        "quota_monitor": {
+            "enabled": bool(quota_raw.get("enabled")),
+            "interval_hours": _clamp_monitor_interval(
+                quota_raw.get("interval_hours"), 12
+            ),
+            "quota_percent": _clamp_threshold_percent(quota_raw.get("quota_percent"), 90),
+            "send_percent": _clamp_threshold_percent(quota_raw.get("send_percent"), 90),
         },
     }
     with get_conn() as conn:
