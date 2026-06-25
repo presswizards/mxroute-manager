@@ -135,6 +135,8 @@ See [Notifications](notifications.md) for setup, the in-app builder, audit event
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
+| `MANAGER_PUBLIC_URL` | No | - | Public HTTPS origin (e.g. `https://manager.example.com`). Used for push notification icons. |
+| `NOTIFICATION_AVATAR_URL` | No | `{MANAGER_PUBLIC_URL}/static/notification-logo.png` | Full URL to the PNG avatar. Falls back to `https://{RESET_PORTAL_CNAME_TARGET}/static/notification-logo.png` when only that host is set. |
 | `APPRISE_CRED_NTFY` | No | - | ntfy auth token when stored in `.env` instead of the database |
 | `APPRISE_CRED_JSON` | No | - | JSON webhook bearer token |
 | `APPRISE_CRED_DISCORD` | No | - | Discord webhook token |

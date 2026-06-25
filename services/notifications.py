@@ -9,6 +9,7 @@ import apprise
 from app_meta import APP_NAME
 from models.db import get_notification_settings
 from utils.apprise_builder import mask_apprise_url, resolve_target_url, SERVICE_CRED_ENV
+from utils.notification_branding import mxm_apprise_asset
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ def _should_notify(entry):
 
 
 def _build_apprise():
-    apobj = apprise.Apprise()
+    apobj = apprise.Apprise(asset=mxm_apprise_asset())
     for url in resolve_apprise_urls():
         apobj.add(url)
     return apobj

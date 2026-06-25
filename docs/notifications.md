@@ -71,6 +71,22 @@ APPRISE_CRED_NTFY=tk_your_ntfy_token_here
 
 The UI stores the non-secret parts of the URL (server, topic, priority, etc.) in the database and injects the token from `.env` when sending.
 
+## Notification icon
+
+Push notifications use the **MXroute Manager logo** instead of the default Apprise icon when a public avatar URL can be resolved.
+
+The app ships `static/notification-logo.png` and, at send time, injects `avatar_url` into supported Apprise URLs (ntfy, Discord, Slack, Mattermost, and similar). Apprise's asset bundle is also pointed at the same image for broader plugin support.
+
+Configure the public URL in `.env`:
+
+| Variable | Purpose |
+| --- | --- |
+| `MANAGER_PUBLIC_URL` | Public origin of this install (e.g. `https://manager.example.com`). Avatar defaults to `{MANAGER_PUBLIC_URL}/static/notification-logo.png`. |
+| `NOTIFICATION_AVATAR_URL` | Optional full URL override if the logo is hosted elsewhere. |
+| `RESET_PORTAL_CNAME_TARGET` | Fallback hostname when `MANAGER_PUBLIC_URL` is unset (combined with `PUBLIC_URL_SCHEME`). |
+
+ntfy must be able to **fetch the PNG over HTTPS** from the internet. If icons still show the Apprise logo, confirm the URL opens in a browser and set `NOTIFICATION_AVATAR_URL` explicitly.
+
 ## Audit events
 
 Subscriptions are explicit: only checked events trigger notifications. The list mirrors actions shown in **Logs**. Common choices:
