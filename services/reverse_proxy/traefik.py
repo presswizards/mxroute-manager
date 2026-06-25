@@ -3,6 +3,7 @@ import re
 
 from models.db import get_env_config
 from services.reverse_proxy.base import BACKEND_TRAEFIK
+from utils.safe_path import path_under_base
 from utils.validators import origin_http_url
 
 _SAFE_NAME = re.compile(r"[^a-z0-9.-]+")
@@ -52,7 +53,7 @@ http:
 
 
 def _fragment_path(hostname):
-    return os.path.join(_dynamic_dir(), f"{_fragment_name(hostname)}.yml")
+    return path_under_base(_dynamic_dir(), f"{_fragment_name(hostname)}.yml")
 
 
 def upsert_traefik_portal_fragment(hostname, steps=None):

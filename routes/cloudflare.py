@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 
 from models.db_dmarc import (
     clear_domain_dmarc_policy,
@@ -6,8 +6,9 @@ from models.db_dmarc import (
     dmarc_policy_payload,
     set_domain_dmarc_policy,
 )
-from utils.validators import validate_domain, validate_dmarc_record, nested_dict_get
+from utils.api_response import GENERIC_ERROR, json_error, mx_json_response
 from utils.auth_helpers import require_admin, require_any_permission, require_permission
+from utils.validators import validate_domain, validate_dmarc_record, nested_dict_get
 from services.cloudflare import (
     cf_is_configured,
     ensure_cf_zone,
@@ -118,9 +119,14 @@ def cloudflare_setup():
         audit("cloudflare.setup", target=domain, steps=len(steps))
         return jsonify({"success": True, "steps": steps})
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Cloudflare domain setup failed for %s", domain)
         return jsonify(
-            {"success": False, "error": {"message": str(e)}, "steps": steps}
+            {
+                "success": False,
+                "error": {"message": GENERIC_ERROR},
+                "steps": steps,
+            }
         ), 500
 
 
@@ -199,8 +205,9 @@ def fix_dns_bulk_route():
             },
         )
         return jsonify({"success": True, "data": result})
-    except Exception as e:
-        return jsonify({"success": False, "error": {"message": str(e)}}), 400
+    except Exception:
+        current_app.logger.exception("Bulk DNS fix failed")
+        return json_error(GENERIC_ERROR, 400)
 
 
 @cloudflare_bp.route("/api/domains/<domain>/dns/fix", methods=["POST"])
@@ -224,8 +231,9 @@ def fix_domain_dns(domain):
     try:
         result = deploy_missing_dns_to_cf(domain, record_types)
         return jsonify({"success": True, "data": result})
-    except Exception as e:
-        return jsonify({"success": False, "error": {"message": str(e)}}), 400
+    except Exception:
+        current_app.logger.exception("Per-domain DNS fix failed for %s", domain)
+        return json_error(GENERIC_ERROR, 400)
 
 
 @cloudflare_bp.route("/api/domains/<domain>/dns", methods=["GET"])
@@ -234,7 +242,7 @@ def get_dns_info(domain):
     res, status = mx_request_raw("GET", f"/domains/{domain}/dns")
     if status == 200 and isinstance(res, dict) and res.get("success"):
         res["data"] = inject_dmarc(res.get("data"), domain)
-    return jsonify(res), status
+    return mx_json_response(res, status)
 
 
 @cloudflare_bp.route("/api/domains/<domain>/dmarc-policy", methods=["GET"])

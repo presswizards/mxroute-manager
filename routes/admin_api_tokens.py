@@ -7,6 +7,7 @@ from routes.admin_blueprint import admin_bp
 from routes.admin_delegations import parse_delegation_grants, _is_admin_from_domains
 from services.mxroute import audit
 from utils.auth_helpers import is_api_token_auth, require_admin
+from utils.api_response import client_value_error_message, json_error
 
 
 def _require_browser_admin(f):
@@ -60,7 +61,7 @@ def post_api_token():
             grants=grants,
         )
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(client_value_error_message(exc), 400)
 
     audit(
         "api_token.create",

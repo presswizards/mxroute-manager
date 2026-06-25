@@ -20,6 +20,12 @@ from services.mail import (
     smtp_config_from_overrides,
 )
 from services.mxroute import audit, mx_request
+from utils.api_response import (
+    INVALID_LOG_DATE_MESSAGE,
+    client_value_error_message,
+    json_error,
+    log_and_json_error,
+)
 from utils.auth_helpers import clear_oidc_config_cache, get_current_user, require_admin
 from utils.audit_log import (
     list_available_log_dates,
@@ -126,13 +132,9 @@ def test_smtp_settings():
                 "message": f"Test email sent to {recipient}.",
             }
         )
-    except Exception as exc:
-        return jsonify(
-            {
-                "success": False,
-                "error": {"message": f"Failed to send test email: {exc}"},
-            }
-        ), 500
+    except Exception:
+        current_app.logger.exception("Failed to send SMTP test email")
+        return json_error("Failed to send test email.", 500)
 
 
 @admin_bp.route("/api/quota", methods=["GET"])
@@ -164,7 +166,9 @@ def get_logs():
     try:
         log_file, current_date = resolve_log_file(date_str or None)
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(
+            client_value_error_message(exc, default=INVALID_LOG_DATE_MESSAGE), 400
+        )
 
     if not log_file or not os.path.exists(log_file):
         return jsonify(
@@ -180,11 +184,8 @@ def get_logs():
 
     try:
         entries = read_recent_log_entries(log_file, limit)
-    except Exception as e:
-        current_app.logger.error(f"Failed to read logs from {log_file}: {e}")
-        return jsonify(
-            {"success": False, "error": {"message": f"Failed to read logs: {e}"}}
-        ), 500
+    except Exception:
+        return log_and_json_error(current_app.logger, "Failed to read logs.", 500)
 
     return jsonify(
         {
@@ -210,7 +211,9 @@ def download_logs():
     try:
         log_file, current_date = resolve_log_file(request.args.get("date") or None)
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(
+            client_value_error_message(exc, default=INVALID_LOG_DATE_MESSAGE), 400
+        )
 
     if not log_file or not os.path.exists(log_file):
         return jsonify(

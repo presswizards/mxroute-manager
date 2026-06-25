@@ -77,8 +77,11 @@ def test_manual_backend_not_configured():
 
 def test_manual_snippets_include_host():
     snippets = manual_snippets("reset.example.com")
-    assert "reset.example.com" in snippets["nginx"]
-    assert "reset.example.com" in snippets["caddy"]
+    assert any(
+        line.strip() == "server_name reset.example.com;"
+        for line in snippets["nginx"].splitlines()
+    )
+    assert snippets["caddy"].startswith("reset.example.com {")
 
 
 def test_traefik_fragment_roundtrip(tmp_path, monkeypatch):

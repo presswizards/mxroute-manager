@@ -1,8 +1,7 @@
-import os
-
 from flask import g
 
 from models.db import get_branding_dir
+from utils.safe_path import path_under_base, safe_filename
 from utils.themes import normalize_theme, DEFAULT_THEME
 
 RESET_PORTAL_ALLOWED_PATHS = frozenset(
@@ -59,12 +58,16 @@ def get_portal_branding_context(portal):
 
 
 def branding_path_for_domain(domain):
-    return os.path.join(get_branding_dir(), domain.lower().strip())
+    return path_under_base(get_branding_dir(), domain.lower().strip())
 
 
 def logo_path_for_portal(portal):
     if not portal or not portal.get("logo_filename"):
         return None
-    return os.path.join(
-        branding_path_for_domain(portal["domain"]), portal["logo_filename"]
-    )
+    try:
+        return path_under_base(
+            branding_path_for_domain(portal["domain"]),
+            safe_filename(portal["logo_filename"]),
+        )
+    except ValueError:
+        return None

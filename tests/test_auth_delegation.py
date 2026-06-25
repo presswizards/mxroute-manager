@@ -67,7 +67,7 @@ def test_me_returns_delegate_profile(fresh_db, client, db_connection):
     assert payload["success"] is True
     assert payload["user"]["email"] == "editor@local"
     assert payload["user"]["is_admin"] is False
-    assert "example.com" in payload["user"]["delegated_domains"]
+    assert payload["user"]["delegated_domains"] == ["example.com"]
     assert payload["user"]["domain_grants"]["example.com"] == ["dashboard", "emails"]
 
 
@@ -118,7 +118,10 @@ def test_delegate_forbidden_on_unassigned_domain(fresh_db, client, db_connection
 
     response = client.get("/api/domains/other.com/email-accounts")
     assert response.status_code == 403
-    assert "other.com" in response.get_json()["error"]["message"]
+    assert (
+        response.get_json()["error"]["message"]
+        == "Forbidden: You do not have access to domain 'other.com'"
+    )
 
 
 def test_domain_list_filtered_for_delegate(fresh_db, client, db_connection):

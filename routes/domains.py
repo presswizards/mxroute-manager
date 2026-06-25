@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 
+from utils.api_response import mx_json_response
 from utils.validators import validate_domain
 from utils.auth_helpers import (
     require_admin,
@@ -117,7 +118,7 @@ def get_domains():
         allowed = [d.lower() for d in mapping.get(email, [])]
         filtered_data = [d for d in res.get("data", []) if d.lower() in allowed]
         res["data"] = filtered_data
-    return jsonify(res), status
+    return mx_json_response(res, status)
 
 
 @domains_bp.route("/api/domains", methods=["POST"])

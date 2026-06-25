@@ -25,6 +25,7 @@ from utils.audit_actions import (
     grouped_audit_actions,
 )
 from utils.auth_helpers import get_current_user, require_admin
+from utils.api_response import client_value_error_message, json_error
 
 
 def merge_target_urls(incoming_targets, existing_targets):
@@ -189,7 +190,7 @@ def save_notifications():
             }
         )
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(client_value_error_message(exc), 400)
     except Exception as exc:
         current_app.logger.error(f"Error saving notification settings: {exc}")
         return jsonify(
@@ -264,7 +265,7 @@ def parse_notification_url():
         parsed = parse_service_url(service_id, url, cred_env=cred_env)
         return jsonify({"success": True, "data": parsed})
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(client_value_error_message(exc), 400)
 
 
 @admin_bp.route("/api/admin/notifications/builder/compile", methods=["POST"])
@@ -278,7 +279,7 @@ def compile_notification_url():
         compiled = compile_service_url(service_id, fields, token_in_env=token_in_env)
         return jsonify({"success": True, "data": compiled})
     except ValueError as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+        return json_error(client_value_error_message(exc), 400)
 
 
 @admin_bp.route("/api/admin/notifications/test", methods=["POST"])
@@ -301,10 +302,6 @@ def test_notifications():
         ).strip().lower() or "admin"
         audit("notification.test", target=login_identifier)
         return jsonify({"success": True, "message": "Test notification sent."})
-    except Exception as exc:
-        return jsonify(
-            {
-                "success": False,
-                "error": {"message": f"Failed to send test notification: {exc}"},
-            }
-        ), 500
+    except Exception:
+        current_app.logger.exception("Failed to send test notification")
+        return json_error("Failed to send test notification.", 500)

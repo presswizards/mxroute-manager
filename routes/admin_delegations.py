@@ -14,6 +14,7 @@ from models.db import (
 from routes.admin_blueprint import admin_bp
 from services.mxroute import audit
 from utils.auth_helpers import get_current_user, require_admin
+from utils.api_response import escape_client_text, json_error
 from utils.validators import (
     is_email_identifier,
     requires_local_password,
@@ -24,7 +25,7 @@ _INVALID_IDENTIFIER = "Invalid user identifier. Use a username (e.g. billy), use
 
 
 def _json_error(message, status=400):
-    return jsonify({"success": False, "error": {"message": message}}), status
+    return json_error(escape_client_text(message), status)
 
 
 def _normalize_delegation_email(raw_email):

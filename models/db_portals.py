@@ -2,6 +2,7 @@ import os
 
 from models.db_conn import get_conn, get_env_config
 from models.db_settings import use_secure_cookies
+from utils.safe_path import path_under_base, safe_filename
 
 
 def _database_file():
@@ -149,12 +150,21 @@ def set_reset_portal_logo(domain, logo_filename):
     return updated
 
 
+def _portal_logo_path(domain, logo_filename):
+    return path_under_base(
+        get_branding_dir(), domain.lower().strip(), safe_filename(logo_filename)
+    )
+
+
 def clear_reset_portal_logo(domain):
     portal = get_reset_portal(domain)
     if not portal or not portal.get("logo_filename"):
         return False
-    logo_path = os.path.join(get_branding_dir(), domain, portal["logo_filename"])
-    if os.path.isfile(logo_path):
+    try:
+        logo_path = _portal_logo_path(domain, portal["logo_filename"])
+    except ValueError:
+        logo_path = None
+    if logo_path and os.path.isfile(logo_path):
         os.remove(logo_path)
     with get_conn() as conn:
         cursor = conn.cursor()

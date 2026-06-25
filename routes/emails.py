@@ -5,6 +5,7 @@ from models.db import (
     get_recovery_map,
     set_recovery_email,
 )
+from utils.api_response import escape_client_text
 from utils.validators import validate_username, validate_recovery_email
 from utils.auth_helpers import (
     get_current_user,
@@ -63,7 +64,10 @@ def create_email_api(domain):
     if result.get("ok"):
         return jsonify({"success": True}), result.get("status", 201)
     return jsonify(
-        {"success": False, "error": {"message": result.get("message")}}
+        {
+            "success": False,
+            "error": {"message": escape_client_text(result.get("message"))},
+        }
     ), result.get("status", 400)
 
 
@@ -85,7 +89,10 @@ def preview_mailbox_import_api():
     )
     if not preview.get("ok"):
         return jsonify(
-            {"success": False, "error": {"message": preview.get("message")}}
+            {
+                "success": False,
+                "error": {"message": escape_client_text(preview.get("message"))},
+            }
         ), preview.get("status", 400)
     return jsonify({"success": True, "data": preview["data"]})
 
@@ -157,7 +164,9 @@ def update_recovery_email(domain, user):
     recovery_email = str(data.get("recovery_email")).strip().lower()
     ok, message = validate_recovery_email(mailbox_email, recovery_email)
     if not ok:
-        return jsonify({"success": False, "error": {"message": message}}), 400
+        return jsonify(
+            {"success": False, "error": {"message": escape_client_text(message)}}
+        ), 400
 
     set_recovery_email(mailbox_email, recovery_email)
     audit(

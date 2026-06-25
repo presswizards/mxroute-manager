@@ -6,6 +6,9 @@ import os
 import re
 from datetime import datetime, timezone
 
+from utils.api_response import INVALID_LOG_DATE_MESSAGE
+from utils.safe_path import path_under_base
+
 # Ensure LOG_DIR defaults to the root project's logs directory
 LOG_DIR = os.getenv(
     "LOG_DIR",
@@ -17,6 +20,10 @@ MAX_LOG_LIMIT = 500
 _logger = logging.getLogger(__name__)
 _LOG_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TAIL_CHUNK_SIZE = 8192
+
+
+def _assert_log_path(path):
+    return path_under_base(LOG_DIR, os.path.basename(path))
 
 
 def write_audit_log(action, user_email, target="", details=None):
@@ -87,11 +94,11 @@ def resolve_log_file(date_str=None):
     if date_str:
         validated = validate_log_date(date_str)
         if not validated:
-            raise ValueError("Invalid date format; expected YYYY-MM-DD")
-        return os.path.join(LOG_DIR, f"{validated}.log"), validated
+            raise ValueError(INVALID_LOG_DATE_MESSAGE)
+        return path_under_base(LOG_DIR, f"{validated}.log"), validated
 
     current_date = available_dates[0]
-    return os.path.join(LOG_DIR, f"{current_date}.log"), current_date
+    return path_under_base(LOG_DIR, f"{current_date}.log"), current_date
 
 
 def read_recent_log_entries(path, limit=DEFAULT_LOG_LIMIT):
@@ -103,6 +110,7 @@ def read_recent_log_entries(path, limit=DEFAULT_LOG_LIMIT):
     """
     limit = normalize_log_limit(limit)
     entries = []
+    path = _assert_log_path(path)
 
     try:
         with open(path, "rb") as handle:
@@ -145,6 +153,7 @@ def read_recent_log_entries(path, limit=DEFAULT_LOG_LIMIT):
 
 def stream_audit_csv(path):
     """Yield CSV chunks for an audit log file (header first)."""
+    path = _assert_log_path(path)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["timestamp", "user", "action", "target", "details"])

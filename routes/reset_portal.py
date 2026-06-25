@@ -1,6 +1,6 @@
 import os
 
-from flask import Blueprint, request, jsonify, g, send_file, abort
+from flask import Blueprint, current_app, request, jsonify, g, send_file, abort
 
 from models.db import (
     get_reset_portal,
@@ -36,7 +36,9 @@ from utils.validators import (
     validate_subdomain_prefix,
 )
 from models.db import get_user_contact_email, resolve_notification_email
+from utils.api_response import GENERIC_ERROR, json_error
 from utils.auth_helpers import require_permission, get_current_user
+from utils.safe_path import path_under_base, safe_filename
 from utils.themes import normalize_theme, DEFAULT_THEME
 
 reset_portal_bp = Blueprint("reset_portal", __name__)
@@ -243,12 +245,19 @@ def upload_reset_portal_logo(domain):
     os.makedirs(branding_dir, exist_ok=True)
 
     if portal.get("logo_filename"):
-        old_path = os.path.join(branding_dir, portal["logo_filename"])
-        if os.path.isfile(old_path):
-            os.remove(old_path)
+        try:
+            old_path = path_under_base(
+                branding_dir, safe_filename(portal["logo_filename"])
+            )
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+        except ValueError as exc:
+            current_app.logger.debug(
+                "Skipping stale portal logo removal for %s: %s", domain, exc
+            )
 
     filename = f"logo.{ext}"
-    logo_path = os.path.join(branding_dir, filename)
+    logo_path = path_under_base(branding_dir, filename)
     with open(logo_path, "wb") as handle:
         handle.write(data)
 
@@ -329,8 +338,9 @@ def deploy_reset_portal_dns(domain):
             domain, portal["subdomain_prefix"], admin_email=admin_email
         )
         return jsonify({"success": True, "data": result})
-    except Exception as exc:
-        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+    except Exception:
+        current_app.logger.exception("Reset portal deploy failed for %s", domain)
+        return json_error(GENERIC_ERROR, 400)
 
 
 @reset_portal_bp.route(

@@ -27,6 +27,7 @@ from utils.validators import (
     nested_dict_get,
     validate_mailbox_password,
 )
+from utils.api_response import escape_client_text
 
 password_reset_bp = Blueprint("password_reset", __name__)
 
@@ -220,7 +221,9 @@ def password_reset_confirm():
     ):
         message = "Failed to update mailbox password."
         if isinstance(res, dict):
-            message = nested_dict_get(res, "error", "message", default=message)
+            upstream = nested_dict_get(res, "error", "message", default="")
+            if upstream:
+                message = escape_client_text(upstream)
         return jsonify(
             {"success": False, "error": {"message": message}}
         ), status if status >= 400 else 500

@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import jsonify
+from utils.api_response import GENERIC_UPSTREAM_ERROR, mx_json_response
 
 from models.db import get_config_value, get_dmarc_record
 from utils.auth_helpers import get_current_user
@@ -37,16 +37,16 @@ def mx_request_raw(method, path, payload=None):
         except ValueError:
             return {
                 "success": False,
-                "error": {"message": response.text},
+                "error": {"message": GENERIC_UPSTREAM_ERROR},
             }, response.status_code
 
-    except requests.exceptions.RequestException as e:
-        return {"success": False, "error": {"message": str(e)}}, 500
+    except requests.exceptions.RequestException:
+        return {"success": False, "error": {"message": GENERIC_UPSTREAM_ERROR}}, 500
 
 
 def mx_request(method, path, payload=None):
     res, status = mx_request_raw(method, path, payload)
-    return jsonify(res), status
+    return mx_json_response(res, status)
 
 
 def audit(action, target="", **details):
@@ -71,7 +71,7 @@ def audited_mx(method, path, payload, action, target=""):
                 if "password" not in key.lower()
             }
         audit(action, target=target or path, **details)
-    return jsonify(res), status
+    return mx_json_response(res, status)
 
 
 def domain_on_mxroute(domain):

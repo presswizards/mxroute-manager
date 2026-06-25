@@ -42,7 +42,7 @@ def get_config_value(key, default=None):
             stored = row[0]
         _settings_cache[key] = stored
     except Exception as e:
-        logger.warning("Failed to read setting %s: %s", key, e)
+        logger.warning("Failed to read setting from database: %s", e)
 
     if stored is not None:
         return stored
