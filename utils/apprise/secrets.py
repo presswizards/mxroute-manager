@@ -2,6 +2,7 @@ import os
 from urllib.parse import quote
 
 from utils.apprise.fields import field_bool, field_text
+from utils.notification_branding import with_notification_avatar
 
 # Per-service env var for token-only storage (see docs/notifications.md).
 SERVICE_CRED_ENV = {
@@ -119,7 +120,7 @@ def resolve_target_url(target):
     """Build a deliverable Apprise URL from a stored target."""
     url = str((target or {}).get("url") or "").strip()
     cred_env = str((target or {}).get("cred_env") or "").strip() or None
-    return resolve_url_with_cred(url, cred_env)
+    return with_notification_avatar(resolve_url_with_cred(url, cred_env))
 
 
 def format_env_cred_snippet(cred_env, secret_value):
