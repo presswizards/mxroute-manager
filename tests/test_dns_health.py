@@ -138,7 +138,7 @@ def test_spf_fails_when_mxroute_include_missing():
     assert health["checks"]["spf"]["status"] == "fail"
 
 
-def test_dmarc_warns_when_valid_policy_differs_from_default():
+def test_dmarc_passes_when_valid_policy_differs_from_default():
     with (
         patch("services.dns_health._query_mx", return_value=[]),
         patch(
@@ -155,8 +155,59 @@ def test_dmarc_warns_when_valid_policy_differs_from_default():
             dmarc_exact_match=False,
         )
 
-    assert health["checks"]["dmarc"]["status"] == "warn"
-    assert "differs from default template" in health["checks"]["dmarc"]["message"]
+    assert health["checks"]["dmarc"]["status"] == "pass"
+    assert "DMARC record present" in health["checks"]["dmarc"]["message"]
+
+
+def test_dmarc_custom_policy_matches_when_dns_has_extra_tags():
+    custom = "v=DMARC1; p=reject; sp=reject; aspf=r;"
+    live = (
+        "v=DMARC1; p=reject; sp=reject; rua=mailto:555@email.com; "
+        "ruf=mailto:666@email.com; aspf=r; fo=1; pct=100"
+    )
+
+    with (
+        patch("services.dns_health._query_mx", return_value=[]),
+        patch(
+            "services.dns_health._query_txt",
+            side_effect=lambda name: {
+                "_dmarc.example.com": [live],
+            }.get(name, []),
+        ),
+    ):
+        health = check_dns_health(
+            "example.com",
+            {},
+            dmarc_expected=custom,
+            dmarc_exact_match=True,
+        )
+
+    assert health["checks"]["dmarc"]["status"] == "pass"
+    assert health["checks"]["dmarc"]["custom_policy"] is True
+
+
+def test_mx_passes_when_hostnames_match_but_priority_differs():
+    expected = {
+        "mx_records": [
+            {"hostname": "redbull.mxrouting.net", "priority": 10},
+            {"hostname": "redbull-relay.mxrouting.net", "priority": 20},
+        ]
+    }
+
+    with (
+        patch(
+            "services.dns_health._query_mx",
+            return_value=[
+                {"hostname": "redbull.mxrouting.net", "priority": 1},
+                {"hostname": "redbull-relay.mxrouting.net", "priority": 20},
+            ],
+        ),
+        patch("services.dns_health._query_txt", return_value=[]),
+    ):
+        health = check_dns_health("example.com", expected)
+
+    assert health["checks"]["mx"]["status"] == "pass"
+    assert "expected MXroute hosts" in health["checks"]["mx"]["message"]
 
 
 def test_dmarc_passes_when_custom_policy_matches_exactly():

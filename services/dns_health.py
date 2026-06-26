@@ -175,6 +175,45 @@ def _is_valid_dmarc(record_norm):
     return "v=dmarc1" in record_norm and ";p=" in f";{record_norm}"
 
 
+def _dmarc_tag_map(record_norm):
+    tags = {}
+    for segment in record_norm.split(";"):
+        segment = segment.strip()
+        if "=" not in segment:
+            continue
+        key, _, value = segment.partition("=")
+        tags[key.lower()] = value.lower()
+    return tags
+
+
+def _dmarc_matches_expected(expected_norm, found_norm):
+    if expected_norm == found_norm:
+        return True
+    if not _is_valid_dmarc(found_norm):
+        return False
+    expected_tags = _dmarc_tag_map(expected_norm)
+    found_tags = _dmarc_tag_map(found_norm)
+    for key in ("p", "sp"):
+        if key in expected_tags and found_tags.get(key) != expected_tags[key]:
+            return False
+    return "p" in found_tags
+
+
+def _mx_hostnames(mx_records):
+    return {
+        str(record.get("hostname", "")).lower().rstrip(".")
+        for record in mx_records or []
+        if record.get("hostname")
+    }
+
+
+def _mx_records_match(expected_mx, found_mx):
+    expected_hosts = _mx_hostnames(expected_mx)
+    if not expected_hosts:
+        return bool(_mx_hostnames(found_mx))
+    return expected_hosts <= _mx_hostnames(found_mx)
+
+
 def _dkim_matches(expected_value, found_values):
     expected_norm = _normalize_txt(expected_value)
     found_norms = [_normalize_txt(value) for value in found_values]
@@ -197,15 +236,15 @@ def _mx_health_check(domain, expected_dns):
         )
     expected_mx.sort(key=lambda item: (item["priority"], item["hostname"]))
     found_mx = _query_mx(domain)
-    mx_pass = expected_mx == found_mx if expected_mx else bool(found_mx)
+    mx_pass = _mx_records_match(expected_mx, found_mx)
     return {
         "status": _check_status(mx_pass),
         "label": "MX Records",
         "expected": expected_mx,
         "found": found_mx,
-        "message": "MX records match MXroute"
+        "message": "MX records include expected MXroute hosts"
         if mx_pass
-        else "MX records missing or incorrect",
+        else "MX records missing required MXroute hosts",
     }
 
 
@@ -263,19 +302,23 @@ def _dmarc_health_check(domain, dmarc_expected, dmarc_exact_match=False):
     if not dmarc_records:
         status = "warn"
         message = "DMARC record missing"
-    elif dmarc_expected_norm in dmarc_records:
+    elif dmarc_expected_norm in dmarc_records or any(
+        _dmarc_matches_expected(dmarc_expected_norm, record)
+        for record in dmarc_records
+    ):
         status = "pass"
         message = (
             "DMARC record matches custom policy"
             if dmarc_exact_match
-            else "DMARC record matches default policy"
+            else "DMARC record matches expected policy"
         )
     elif dmarc_exact_match:
         status = "warn"
         message = "DMARC record missing or does not match custom policy"
     elif any(_is_valid_dmarc(record) for record in dmarc_records):
-        status = "warn"
-        message = "DMARC record present (differs from default template)"
+        status = "pass"
+        policy = _dmarc_tag_map(dmarc_records[0]).get("p", "unknown")
+        message = f"DMARC record present (p={policy})"
     else:
         status = "warn"
         message = "DMARC record missing or invalid"
