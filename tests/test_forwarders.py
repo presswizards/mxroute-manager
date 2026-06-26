@@ -41,7 +41,9 @@ def test_list_forwarders_allowed_with_permission(fresh_db, client, forwarders_to
         "success": True,
         "data": [{"alias": "info", "forward_to": "me@example.com"}],
     }
-    with patch("routes.emails.mx_domain_request", return_value=mx_json_response(payload)):
+    with patch(
+        "routes.emails.mx_domain_request", return_value=mx_json_response(payload)
+    ):
         response = client.get(f"/api/domains/{DOMAIN}/forwarders")
 
     assert response.status_code == 200
@@ -115,7 +117,9 @@ def test_get_catch_all_with_permission(fresh_db, client, forwarders_token):
         "success": True,
         "data": {"enabled": True, "forward_to": "catch@example.com"},
     }
-    with patch("routes.emails.mx_domain_request", return_value=mx_json_response(payload)):
+    with patch(
+        "routes.emails.mx_domain_request", return_value=mx_json_response(payload)
+    ):
         response = client.get(f"/api/domains/{DOMAIN}/catch-all")
 
     assert response.status_code == 200
@@ -151,7 +155,9 @@ def test_update_catch_all_calls_mxroute(fresh_db, client, forwarders_token):
 
 def test_list_pointers_allowed_with_forwarders(fresh_db, client, forwarders_token):
     payload = {"success": True, "data": ["other.com"]}
-    with patch("routes.domains.mx_domain_request", return_value=mx_json_response(payload)):
+    with patch(
+        "routes.domains.mx_domain_request", return_value=mx_json_response(payload)
+    ):
         response = client.get(f"/api/domains/{DOMAIN}/pointers")
 
     assert response.status_code == 200

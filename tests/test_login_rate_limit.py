@@ -4,11 +4,13 @@ import pytest
 from werkzeug.security import generate_password_hash
 
 from routes import auth_local as auth_module
+from tests.helpers import csrf_token_from_response, logout_session
 
 
 @pytest.fixture(autouse=True)
 def clean_login_state(fresh_db, db_connection):
     db_connection.execute("DELETE FROM users")
+    db_connection.execute("DELETE FROM rate_limit_events")
     db_connection.commit()
     auth_module._login_limiter.clear()
     yield
@@ -42,7 +44,9 @@ def test_successful_login_clears_failure_counter(client, db_connection):
     ok = client.post("/login", data={"username": "billy", "password": "Abcd123!"})
     assert ok.status_code == 302
 
-    client.get("/logout")
+    logout_session(
+        client, csrf_token_from_response(client, path="/login", host="localhost")
+    )
 
     # Counter was reset on success, so a fresh failure is not immediately blocked.
     assert _fail_login(client, username="billy").status_code == 200

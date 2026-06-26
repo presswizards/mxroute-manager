@@ -5,7 +5,12 @@ from models.db import (
     get_recovery_map,
     set_recovery_email,
 )
-from utils.api_response import escape_client_text, json_ok, mx_json_response, sanitize_client_json
+from utils.api_response import (
+    escape_client_text,
+    json_ok,
+    mx_json_response,
+    sanitize_client_json,
+)
 from utils.validators import validate_username, validate_recovery_email
 from utils.auth_helpers import (
     get_current_user,

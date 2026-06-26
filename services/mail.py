@@ -11,6 +11,7 @@ from models.db import (
     reset_smtp_use_tls,
 )
 from utils.audit_log import write_audit_log
+from utils.ssrf_guard import validate_smtp_host
 
 
 def smtp_config_from_settings():
@@ -42,8 +43,12 @@ def smtp_config_from_overrides(data):
     else:
         use_tls = str(use_tls_raw).lower() in ("true", "1", "yes")
 
+    host = str(overrides.get("RESET_SMTP_HOST", saved["host"] or "")).strip()
+    if host:
+        validate_smtp_host(host)
+
     return {
-        "host": str(overrides.get("RESET_SMTP_HOST", saved["host"] or "")).strip(),
+        "host": host,
         "port": port,
         "user": str(overrides.get("RESET_SMTP_USER", saved["user"] or "")).strip(),
         "password": password,

@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>API Reference — {{ app_meta.name }}</title>
     <link rel="icon" type="image/svg+xml" href="/static/logo.svg?v={{ app_version }}">
     <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
-    <script>
+    <script nonce="{{ csp_nonce }}">
         (function () {
             var theme = localStorage.getItem("workspace-theme") || "emerald";
             var allowed = [

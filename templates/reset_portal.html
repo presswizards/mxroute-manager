@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>{{ portal_title }} - Reset Mailbox Password</title>
     <link rel="icon" type="image/svg+xml" href="/static/logo.svg?v={{ app_version }}">
     <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
@@ -145,10 +146,10 @@
         </div>
     </div>
 
-    <script>
-        function getCookie(name) {
-            const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-            return match ? decodeURIComponent(match[2]) : null;
+    <script nonce="{{ csp_nonce }}">
+        function getCsrfToken() {
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            return meta ? (meta.getAttribute('content') || '') : '';
         }
 
         async function loadResetStatus() {
@@ -198,7 +199,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRF-Token': getCookie('csrf_token') || ''
+                        'X-CSRF-Token': getCsrfToken()
                     },
                     body: JSON.stringify({ mailbox_email: mailboxEmail })
                 });

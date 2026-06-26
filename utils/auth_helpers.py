@@ -5,6 +5,7 @@ from flask import session, jsonify, current_app, g, request
 from functools import wraps
 
 from models.db import (
+    get_conn,
     get_oidc_discovery_url,
     get_oidc_admin_users,
     get_admin_user,
@@ -28,6 +29,12 @@ def get_oidc_config():
     discovery_url = get_oidc_discovery_url()
     if not discovery_url:
         raise ValueError("OIDC_DISCOVERY_URL is not configured")
+    from utils.ssrf_guard import validate_http_service_url
+
+    validate_http_service_url(discovery_url, require_https=True)
+    from utils.ssrf_guard import hostname_from_service_url, resolve_outbound_host
+
+    resolve_outbound_host(hostname_from_service_url(discovery_url) or discovery_url)
     with _oidc_config_lock:
         now = time.monotonic()
         if (
@@ -80,9 +87,27 @@ def authenticate_bearer_token():
     return build_user_from_api_token(record)
 
 
+def _resolve_db_is_admin(email):
+    """Return is_admin from DB when the user row exists, else None."""
+    if not email:
+        return None
+    try:
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT is_admin FROM users WHERE email = ?", (email,))
+            row = cursor.fetchone()
+            if row is not None:
+                return bool(row[0])
+    except Exception as e:
+        current_app.logger.warning("Failed to read is_admin for %s: %s", email, e)
+    return None
+
+
 def is_user_admin(user):
     if not user:
         return False
+    if is_api_token_auth(user):
+        return bool(user.get("is_admin"))
     email_val = user.get("email")
     email = email_val.lower() if isinstance(email_val, str) else ""
     if email in get_oidc_admin_users() or email == get_admin_user():
@@ -90,7 +115,10 @@ def is_user_admin(user):
     mapping = load_domain_mapping()
     if "*" in mapping.get(email, []):
         return True
-    return user.get("is_admin", False)
+    resolved = _resolve_db_is_admin(email)
+    if resolved is not None:
+        return resolved
+    return bool(user.get("is_admin", False))
 
 
 def _user_email(user):
@@ -101,9 +129,9 @@ def _user_email(user):
 def get_domain_grants(user):
     if not user:
         return {}
-    cached = user.get("domain_grants")
-    if isinstance(cached, dict):
-        return cached
+    if is_api_token_auth(user):
+        cached = user.get("domain_grants")
+        return cached if isinstance(cached, dict) else {}
     email = _user_email(user)
     return load_user_grants().get(email, {})
 

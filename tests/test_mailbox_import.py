@@ -44,7 +44,11 @@ def test_preview_rejects_invalid_username(fresh_db, db_connection):
         "editor@local",
         grants=[{"domain": DOMAIN, "permissions": ["emails"]}],
     )
-    user = {"email": "editor@local", "is_admin": False, "domain_grants": {DOMAIN: ["emails"]}}
+    user = {
+        "email": "editor@local",
+        "is_admin": False,
+        "domain_grants": {DOMAIN: ["emails"]},
+    }
     preview = preview_mailbox_import(
         [{"username": "bad name", "password": "Abcd123!"}],
         user=user,
@@ -87,7 +91,12 @@ def test_preview_route(fresh_db, client, db_connection):
             "default_domain": DOMAIN,
             "existing_by_domain": {DOMAIN: []},
             "rows": [
-                {"username": "alice", "password": "Abcd123!", "quota": 1024, "limit": 9600},
+                {
+                    "username": "alice",
+                    "password": "Abcd123!",
+                    "quota": 1024,
+                    "limit": 9600,
+                },
                 {"username": "bob", "password": "short"},
             ],
         },
@@ -105,7 +114,11 @@ def test_preview_flags_existing_mailbox(fresh_db, db_connection):
         "editor@local",
         grants=[{"domain": DOMAIN, "permissions": ["emails"]}],
     )
-    user = {"email": "editor@local", "is_admin": False, "domain_grants": {DOMAIN: ["emails"]}}
+    user = {
+        "email": "editor@local",
+        "is_admin": False,
+        "domain_grants": {DOMAIN: ["emails"]},
+    }
     preview = preview_mailbox_import(
         [
             {"username": "alice", "password": "Abcd123!"},

@@ -51,6 +51,14 @@ def auth_post_headers(csrf_token):
     return {"X-CSRF-Token": csrf_token, "Content-Type": "application/json"}
 
 
+def logout_session(client, csrf_token):
+    return client.post(
+        "/logout",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+
+
 def mx_json_response(payload, status=200):
     """Flask-compatible (response, status) tuple for mocking mx_request / audited_mx."""
     from flask import jsonify
@@ -124,7 +132,8 @@ def patch_oidc_http(token_data=None, userinfo_data=None):
     def _patch():
         with (
             patch(
-                "routes.auth_oidc.requests.post", return_value=_MockHttpResponse(token_data)
+                "routes.auth_oidc.requests.post",
+                return_value=_MockHttpResponse(token_data),
             ) as mock_post,
             patch(
                 "routes.auth_oidc.requests.get",

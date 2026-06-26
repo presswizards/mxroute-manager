@@ -15,14 +15,21 @@ from utils.audit_log import write_audit_log
 from utils.validators import is_email_identifier
 
 
-@auth_bp.route("/logout")
+@auth_bp.route("/logout", methods=["POST"])
 def logout():
     user = get_current_user()
     if user:
         email = user.get("email", "unknown")
         write_audit_log("auth.logout", email, email)
-    session.pop("user", None)
+    session.clear()
     return redirect(url_for("auth.login_page"))
+
+
+@auth_bp.route("/logout", methods=["GET"])
+def logout_get():
+    return jsonify(
+        {"success": False, "error": {"message": "Method Not Allowed. Use POST."}}
+    ), 405
 
 
 @auth_bp.route("/api/me")

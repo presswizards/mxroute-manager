@@ -67,24 +67,26 @@ if _proxy_hops > 0:
         app.wsgi_app, x_for=_proxy_hops, x_proto=_proxy_hops, x_host=_proxy_hops
     )
 
-# Baseline Content-Security-Policy. Inline scripts/styles and inline event handlers
-# are still used in templates, so 'unsafe-inline' is required for now; the rest of
-# the policy still blocks plugins, framing, and unexpected origins. Google Fonts is
-# allowlisted because static/style.css imports it.
-CONTENT_SECURITY_POLICY = "; ".join(
-    [
-        "default-src 'self'",
-        "base-uri 'self'",
-        "object-src 'none'",
-        "frame-ancestors 'self'",
-        "img-src 'self' data:",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' https://fonts.gstatic.com",
-        "script-src 'self' 'unsafe-inline'",
-        "connect-src 'self'",
-        "form-action 'self'",
-    ]
-)
+
+# Content-Security-Policy: script nonces for inline blocks; styles still allow inline
+# attributes until the template markup is fully externalized.
+def build_content_security_policy(nonce):
+    script_src = f"'self' 'nonce-{nonce}'"
+    return "; ".join(
+        [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-ancestors 'self'",
+            "img-src 'self' data:",
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "font-src 'self' https://fonts.gstatic.com",
+            f"script-src {script_src}",
+            "connect-src 'self'",
+            "form-action 'self'",
+        ]
+    )
+
 
 # Register Blueprints
 app.register_blueprint(auth_bp)
@@ -192,6 +194,7 @@ def check_authentication():
 # CSRF protection implementation
 @app.before_request
 def generate_csrf_token():
+    g.csp_nonce = secrets.token_urlsafe(16)
     if "csrf_token" not in session:
         session["csrf_token"] = secrets.token_urlsafe(32)
 
@@ -200,6 +203,7 @@ def generate_csrf_token():
 def inject_global_vars():
     return dict(
         csrf_token=session.get("csrf_token"),
+        csp_nonce=getattr(g, "csp_nonce", ""),
         oidc_enabled=is_oidc_enabled(),
         admin_user=get_admin_user(),
     )
@@ -211,6 +215,7 @@ def set_csrf_cookie(response):
         response.set_cookie(
             "csrf_token",
             session["csrf_token"],
+            httponly=True,
             samesite="Lax",
             secure=use_secure_cookies(),
         )
@@ -222,8 +227,11 @@ def set_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    # setdefault lets specific endpoints (e.g. the SVG logo) apply a stricter policy.
-    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    nonce = getattr(g, "csp_nonce", None)
+    if nonce:
+        response.headers.setdefault(
+            "Content-Security-Policy", build_content_security_policy(nonce)
+        )
     if use_secure_cookies():
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"

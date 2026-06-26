@@ -14,15 +14,30 @@ def escape_client_text(value):
     return escape(str(value))
 
 
+def _sanitize_dict(value):
+    return {key: sanitize_client_json(item) for key, item in value.items()}
+
+
+def _sanitize_list(value):
+    return [sanitize_client_json(item) for item in value]
+
+
+def _sanitize_tuple(value):
+    return tuple(sanitize_client_json(item) for item in value)
+
+
+_SANITIZE_HANDLERS = {
+    str: escape_client_text,
+    dict: _sanitize_dict,
+    list: _sanitize_list,
+    tuple: _sanitize_tuple,
+}
+
+
 def sanitize_client_json(value):
-    if isinstance(value, str):
-        return escape_client_text(value)
-    if isinstance(value, dict):
-        return {key: sanitize_client_json(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [sanitize_client_json(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(sanitize_client_json(item) for item in value)
+    handler = _SANITIZE_HANDLERS.get(type(value))
+    if handler:
+        return handler(value)
     return value
 
 

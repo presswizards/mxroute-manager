@@ -117,6 +117,17 @@ def _create_tables(cursor):
             revoked_at TEXT
         );
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS rate_limit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket_key TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rate_limit_events_bucket_time
+        ON rate_limit_events(bucket_key, created_at);
+    """)
 
 
 def _migrate_json_domain_mapping(cursor, conn, logger):

@@ -101,14 +101,18 @@ def refresh_fleet_overview():
     user = get_current_user()
     if not user:
         return jsonify({"success": False, "error": {"message": "Unauthorized"}}), 401
-    if not _user_account_domains(user):
+    visible_domains = _user_account_domains(user)
+    if not visible_domains:
         return jsonify(
             {
                 "success": False,
                 "error": {"message": "No domains available to refresh"},
             }
         ), 400
-    run_fleet_overview_scan()
+    if is_user_admin(user):
+        run_fleet_overview_scan()
+    else:
+        run_fleet_overview_scan(visible_domains, merge=True)
     return jsonify({"success": True, "data": _fleet_overview_payload(user)})
 
 

@@ -254,6 +254,12 @@ function getCookie(name) {
     return "";
 }
 
+function getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) return meta.getAttribute("content") || "";
+    return getCookie("csrf_token");
+}
+
 // Helper to make API requests easily
 async function apiRequest(url, method = "GET", body = null) {
     const options = {
@@ -267,7 +273,7 @@ async function apiRequest(url, method = "GET", body = null) {
     }
 
     if (method !== "GET") {
-        const csrfToken = getCookie("csrf_token");
+        const csrfToken = getCsrfToken();
         if (csrfToken) {
             options.headers["X-CSRF-Token"] = csrfToken;
         }

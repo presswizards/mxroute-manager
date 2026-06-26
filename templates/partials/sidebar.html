@@ -59,9 +59,12 @@
                 <span id="user-role-badge"
                     style="font-size: 0.65rem; padding: 0.1rem 0.3rem; border-radius: 4px; background: var(--accent-glow); color: var(--accent);">Admin</span>
             </div>
-            <a href="/logout" class="btn btn-secondary btn-sm"
-                style="width: 100%; font-size: 0.75rem; padding: 0.35rem 0.5rem; justify-content: center; display: inline-flex;">{{ icon('box-arrow-right') }}
-                Log Out</a>
+            <form method="post" action="/logout" class="logout-form" style="width: 100%;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token or '' }}">
+                <button type="submit" class="btn btn-secondary btn-sm logout-btn"
+                    style="width: 100%; font-size: 0.75rem; padding: 0.35rem 0.5rem; justify-content: center; display: inline-flex;">{{ icon('box-arrow-right') }}
+                    Log Out</button>
+            </form>
         </div>
     </div>
 </aside>

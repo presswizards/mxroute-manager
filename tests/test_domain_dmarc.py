@@ -7,7 +7,11 @@ from models.db_dmarc import (
     get_dmarc_record_for_domain,
     set_domain_dmarc_policy,
 )
-from tests.helpers import auth_post_headers, insert_user_with_grants, prime_authenticated_session
+from tests.helpers import (
+    auth_post_headers,
+    insert_user_with_grants,
+    prime_authenticated_session,
+)
 
 DOMAIN = "example.com"
 CUSTOM_DMARC = "v=DMARC1; p=reject; sp=reject; aspf=r;"
@@ -40,7 +44,10 @@ def test_clear_domain_dmarc_policy_reverts_to_default(fresh_db, monkeypatch):
     monkeypatch.setenv("DMARC_RECORD", "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;")
     set_domain_dmarc_policy(DOMAIN, CUSTOM_DMARC)
     clear_domain_dmarc_policy(DOMAIN)
-    assert get_dmarc_record_for_domain(DOMAIN) == "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;"
+    assert (
+        get_dmarc_record_for_domain(DOMAIN)
+        == "v=DMARC1; p=none; sp=none; adkim=r; aspf=r;"
+    )
 
 
 def test_dmarc_policy_get_and_patch(fresh_db, client, dns_delegate_token):
@@ -69,7 +76,9 @@ def test_dmarc_policy_get_and_patch(fresh_db, client, dns_delegate_token):
     assert clear_resp.get_json()["data"]["custom"] is False
 
 
-def test_dmarc_policy_patch_rejects_invalid_record(fresh_db, client, dns_delegate_token):
+def test_dmarc_policy_patch_rejects_invalid_record(
+    fresh_db, client, dns_delegate_token
+):
     response = client.patch(
         f"/api/domains/{DOMAIN}/dmarc-policy",
         headers=auth_post_headers(dns_delegate_token),

@@ -1,65 +1,91 @@
-"""In-memory sliding-window rate limiting.
-
-ponytail: per-process state with a global lock. Ceiling: limits are enforced per
-Gunicorn worker (no cross-worker coordination), and memory grows with the number
-of distinct keys until they age out of the window. Upgrade path is a shared store
-(e.g. Redis) if strict global limits or many keys are needed.
-"""
+"""Sliding-window rate limiting backed by SQLite (shared across workers)."""
 
 import time
-from collections import defaultdict
-from threading import Lock
+
+from models.db_conn import get_conn
 
 
 class SlidingWindowRateLimiter:
     def __init__(self, window_seconds):
         self.window_seconds = window_seconds
-        self.buckets = defaultdict(list)
-        self.lock = Lock()
 
-    def _prune(self, timestamps, now):
-        timestamps[:] = [ts for ts in timestamps if now - ts < self.window_seconds]
+    def _prune(self, cursor, key, now):
+        cutoff = now - self.window_seconds
+        cursor.execute(
+            "DELETE FROM rate_limit_events WHERE bucket_key = ? AND created_at < ?",
+            (key, cutoff),
+        )
+
+    def _count(self, cursor, key):
+        cursor.execute(
+            "SELECT COUNT(*) FROM rate_limit_events WHERE bucket_key = ?",
+            (key,),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
 
     def hit(self, key, limit):
         """Record an event and return True if still within `limit`, else False."""
         now = time.time()
-        with self.lock:
-            timestamps = self.buckets[key]
-            self._prune(timestamps, now)
-            if len(timestamps) >= limit:
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            self._prune(cursor, key, now)
+            if self._count(cursor, key) >= limit:
                 return False
-            timestamps.append(now)
+            cursor.execute(
+                "INSERT INTO rate_limit_events (bucket_key, created_at) VALUES (?, ?)",
+                (key, now),
+            )
+            conn.commit()
             return True
 
     def is_blocked(self, key, limit):
         """Return True if `key` has already reached `limit` within the window."""
         now = time.time()
-        with self.lock:
-            timestamps = self.buckets[key]
-            self._prune(timestamps, now)
-            return len(timestamps) >= limit
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            self._prune(cursor, key, now)
+            return self._count(cursor, key) >= limit
 
     def register(self, key):
         """Record an event without enforcing a limit (used to count failures)."""
         now = time.time()
-        with self.lock:
-            timestamps = self.buckets[key]
-            self._prune(timestamps, now)
-            timestamps.append(now)
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            self._prune(cursor, key, now)
+            cursor.execute(
+                "INSERT INTO rate_limit_events (bucket_key, created_at) VALUES (?, ?)",
+                (key, now),
+            )
+            conn.commit()
 
     def retry_after(self, key):
         """Seconds until the oldest recorded event leaves the window (0 if empty)."""
         now = time.time()
-        with self.lock:
-            timestamps = self.buckets[key]
-            self._prune(timestamps, now)
-            if not timestamps:
-                return 0
-            return max(0, int(self.window_seconds - (now - timestamps[0])) + 1)
+        cutoff = now - self.window_seconds
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT MIN(created_at) FROM rate_limit_events
+                WHERE bucket_key = ? AND created_at >= ?
+                """,
+                (key, cutoff),
+            )
+            row = cursor.fetchone()
+            oldest = row[0] if row else None
+        if oldest is None:
+            return 0
+        return max(0, int(self.window_seconds - (now - float(oldest))) + 1)
 
     def clear(self, key=None):
-        with self.lock:
+        with get_conn() as conn:
+            cursor = conn.cursor()
             if key is None:
-                self.buckets.clear()
+                cursor.execute("DELETE FROM rate_limit_events")
             else:
-                self.buckets.pop(key, None)
+                cursor.execute(
+                    "DELETE FROM rate_limit_events WHERE bucket_key = ?",
+                    (key,),
+                )
+            conn.commit()

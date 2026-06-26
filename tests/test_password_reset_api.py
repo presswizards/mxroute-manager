@@ -15,11 +15,12 @@ RECOVERY = "backup@gmail.com"
 def clear_password_reset_state(fresh_db, db_connection):
     db_connection.execute("DELETE FROM mailbox_recovery")
     db_connection.execute("DELETE FROM password_reset_tokens")
+    db_connection.execute("DELETE FROM domain_reset_portals")
+    db_connection.execute("DELETE FROM rate_limit_events")
     db_connection.commit()
     from routes import password_reset as pr_module
 
-    with pr_module._RATE_LOCK:
-        pr_module._RATE_BUCKETS.clear()
+    pr_module._reset_limiter.clear()
 
 
 def _public_csrf(client):
@@ -103,10 +104,15 @@ def test_reset_request_uses_branded_from_when_portal_enabled(
         patch("routes.password_reset.send_password_reset_email") as mock_send,
         patch("routes.password_reset.write_audit_log"),
     ):
-        csrf = _public_csrf(client)
+        csrf = csrf_token_from_response(
+            client, path="/api/public/password-reset/status", host="reset.example.com"
+        )
         response = client.post(
             "/api/public/password-reset/request",
-            headers=auth_post_headers(csrf),
+            headers={
+                **auth_post_headers(csrf),
+                "Host": "reset.example.com",
+            },
             json={"mailbox_email": MAILBOX},
         )
 
@@ -185,3 +191,28 @@ def test_reset_confirm_unavailable_returns_503(client):
         )
 
     assert response.status_code == 503
+
+
+def test_reset_confirm_rate_limited_by_ip(client):
+    from routes import password_reset as pr_module
+
+    with patch("routes.password_reset.is_password_reset_available", return_value=True):
+        csrf = _public_csrf(client)
+        headers = auth_post_headers(csrf)
+        payload = {"token": "not-a-real-token", "password": "Abcd123!"}
+        for _ in range(pr_module._CONFIRM_IP_LIMIT):
+            response = client.post(
+                "/api/public/password-reset/confirm",
+                headers=headers,
+                json=payload,
+            )
+            assert response.status_code == 400
+
+        response = client.post(
+            "/api/public/password-reset/confirm",
+            headers=headers,
+            json=payload,
+        )
+
+    assert response.status_code == 400
+    assert "invalid or expired" in response.get_json()["error"]["message"].lower()

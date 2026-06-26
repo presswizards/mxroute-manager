@@ -127,6 +127,59 @@ def test_delegate_forbidden_on_unassigned_domain(fresh_db, client, db_connection
     )
 
 
+def test_revoked_delegation_denies_stale_session(fresh_db, client, db_connection):
+    insert_user_with_grants(
+        db_connection,
+        "editor@local",
+        grants=[{"domain": "example.com", "permissions": ["emails"]}],
+    )
+    token = prime_authenticated_session(client, "editor@local")
+
+    db_connection.execute("DELETE FROM delegations")
+    db_connection.commit()
+
+    with patch("routes.emails.mx_domain_request_raw") as mock_mx:
+        response = client.get("/api/domains/example.com/email-accounts")
+
+    assert response.status_code == 403
+    mock_mx.assert_not_called()
+
+    with patch("routes.emails.audited_mx_domain") as mock_mx:
+        response = client.post(
+            "/api/domains/example.com/email-accounts",
+            headers=auth_post_headers(token),
+            json={"username": "alex", "password": "Abcd123!"},
+        )
+
+    assert response.status_code == 403
+    mock_mx.assert_not_called()
+
+
+def test_demoted_admin_denies_stale_session(fresh_db, client, db_connection):
+    insert_user_with_grants(
+        db_connection,
+        "former@local",
+        grants=[],
+        is_admin=True,
+    )
+    token = prime_authenticated_session(client, "former@local")
+
+    db_connection.execute(
+        "UPDATE users SET is_admin = 0 WHERE email = ?", ("former@local",)
+    )
+    db_connection.commit()
+
+    with patch("routes.domains.audited_mx") as mock_mx:
+        response = client.post(
+            "/api/domains",
+            headers=auth_post_headers(token),
+            json={"domain": "new.com"},
+        )
+
+    assert response.status_code == 403
+    mock_mx.assert_not_called()
+
+
 def test_domain_list_filtered_for_delegate(fresh_db, client, db_connection):
     insert_user_with_grants(
         db_connection,

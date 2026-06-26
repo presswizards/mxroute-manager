@@ -6,7 +6,7 @@
             <span class="overlay-icon">{{ icon('exclamation-triangle-fill', 'icon-lg') }}</span>
             <h3 style="font-family: var(--font-heading); font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--color-primary);">Mail Hosting Disabled</h3>
             <p style="color: var(--color-secondary); max-width: 380px; font-size: 0.95rem; line-height: 1.5;">
-                Mail hosting is currently disabled for this domain. Enable it on the <a href="#" onclick="document.querySelector('[data-tab=\'dashboard\']').click(); return false;" style="color: var(--accent); text-decoration: underline;">Dashboard</a> to provision mailboxes.
+                Mail hosting is currently disabled for this domain. Enable it on the <a href="#" data-nav-tab="dashboard" style="color: var(--accent); text-decoration: underline;">Dashboard</a> to provision mailboxes.
             </p>
         </div>
         <h3 class="card-title">{{ icon('plus-circle') }} Provision New Email Account</h3>
@@ -106,7 +106,7 @@
             <div class="flex-row" style="gap: 0.5rem;">
                 <button type="button" class="btn btn-primary btn-sm" id="btn-copy-mailbox-credentials">{{ icon('clipboard') }} Copy All</button>
                 <button class="btn btn-secondary btn-sm"
-                    onclick="document.getElementById('credentials-output-card').style.display='none'">Dismiss</button>
+                    data-dismiss-credentials>Dismiss</button>
             </div>
         </div>
         <p class="stat-card-subtitle mb-4">Share these settings with the mailbox user or import them into a mail client:</p>

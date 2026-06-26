@@ -303,8 +303,7 @@ def _dmarc_health_check(domain, dmarc_expected, dmarc_exact_match=False):
         status = "warn"
         message = "DMARC record missing"
     elif dmarc_expected_norm in dmarc_records or any(
-        _dmarc_matches_expected(dmarc_expected_norm, record)
-        for record in dmarc_records
+        _dmarc_matches_expected(dmarc_expected_norm, record) for record in dmarc_records
     ):
         status = "pass"
         message = (

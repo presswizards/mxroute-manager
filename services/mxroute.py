@@ -75,7 +75,10 @@ def mx_domain_request(method, domain, suffix, payload=None):
 
 def mx_domain_request_raw(method, domain, suffix, payload=None):
     if not validate_domain(domain):
-        return {"success": False, "error": {"message": "Invalid domain name format"}}, 400
+        return {
+            "success": False,
+            "error": {"message": "Invalid domain name format"},
+        }, 400
     return mx_request_raw(method, _domain_path(domain, suffix), payload)
 
 

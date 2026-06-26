@@ -82,14 +82,27 @@ def _run_domain_scans(domains):
     return results
 
 
-def run_fleet_overview_scan():
-    """Scan all account domains and persist a fleet overview snapshot."""
-    domains = _list_account_domains()
+def run_fleet_overview_scan(domains=None, *, merge=False):
+    """Scan domains and persist a fleet overview snapshot.
+
+    When ``domains`` is omitted, scan every account domain and replace cache.
+    When ``domains`` is provided with ``merge=True``, update only those rows.
+    """
+    if domains is None:
+        domains = _list_account_domains()
+        merge = False
     now = time.time()
     if not domains:
+        if merge:
+            return get_fleet_overview_state()
         return save_fleet_overview_state({"last_run_at": now, "domains": {}})
 
     current = _run_domain_scans(domains)
+    if merge:
+        state = get_fleet_overview_state()
+        merged = dict(state.get("domains") or {})
+        merged.update(current)
+        return save_fleet_overview_state({"last_run_at": now, "domains": merged})
     return save_fleet_overview_state({"last_run_at": now, "domains": current})
 
 

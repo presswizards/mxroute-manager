@@ -11,7 +11,7 @@ def test_quota_monitor_skips_when_disabled(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "t", "url": "json://localhost"}],
+            "targets": [{"label": "t", "url": "json://hooks.example.com"}],
             "actions": ["mailbox.quota_alert"],
             "dns_monitor": {"enabled": False, "interval_hours": 24},
             "quota_monitor": {"enabled": False, "interval_hours": 1},
@@ -26,7 +26,7 @@ def test_quota_monitor_alerts_on_quota_threshold(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "t", "url": "json://localhost"}],
+            "targets": [{"label": "t", "url": "json://hooks.example.com"}],
             "actions": ["mailbox.quota_alert"],
             "dns_monitor": {"enabled": False, "interval_hours": 24},
             "quota_monitor": {
@@ -66,7 +66,7 @@ def test_quota_monitor_respects_interval(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "t", "url": "json://localhost"}],
+            "targets": [{"label": "t", "url": "json://hooks.example.com"}],
             "actions": ["mailbox.quota_alert"],
             "dns_monitor": {"enabled": False, "interval_hours": 24},
             "quota_monitor": {"enabled": True, "interval_hours": 24},

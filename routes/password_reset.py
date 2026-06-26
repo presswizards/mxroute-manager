@@ -1,7 +1,3 @@
-import time
-from collections import defaultdict
-from threading import Lock
-
 from flask import Blueprint, request, jsonify, render_template, url_for, g, current_app
 
 from models.db import (
@@ -22,6 +18,7 @@ from services.mxroute import mx_request_raw
 from services.reset_portal import get_portal_branding_context
 from services.reset_portal_mail import build_portal_reset_from_address
 from utils.audit_log import write_audit_log
+from utils.rate_limit import SlidingWindowRateLimiter
 from utils.validators import (
     is_email_identifier,
     nested_dict_get,
@@ -36,11 +33,11 @@ GENERIC_SUCCESS = (
     "you will receive password reset instructions shortly."
 )
 
-_RATE_LOCK = Lock()
-_RATE_BUCKETS = defaultdict(list)
 _IP_LIMIT = 5
 _MAILBOX_LIMIT = 3
+_CONFIRM_IP_LIMIT = 10
 _WINDOW_SECONDS = 3600
+_reset_limiter = SlidingWindowRateLimiter(_WINDOW_SECONDS)
 
 
 def _client_ip():
@@ -50,14 +47,7 @@ def _client_ip():
 
 
 def _rate_limit_ok(bucket_key, limit):
-    now = time.time()
-    with _RATE_LOCK:
-        timestamps = _RATE_BUCKETS[bucket_key]
-        timestamps[:] = [ts for ts in timestamps if now - ts < _WINDOW_SECONDS]
-        if len(timestamps) >= limit:
-            return False
-        timestamps.append(now)
-        return True
+    return _reset_limiter.hit(bucket_key, limit)
 
 
 def _audit_public(action, target="", **details):
@@ -66,9 +56,12 @@ def _audit_public(action, target="", **details):
 
 def _mailbox_allowed_for_portal(mailbox_domain):
     portal_domain = getattr(g, "reset_portal_domain", None)
-    if not portal_domain:
-        return True
-    return mailbox_domain == portal_domain
+    if portal_domain:
+        return mailbox_domain == portal_domain
+    # Branded portal domains must reset via their portal host, not the manager UI.
+    if get_active_reset_portal_for_mailbox_domain(mailbox_domain):
+        return False
+    return True
 
 
 @password_reset_bp.route("/api/public/password-reset/status", methods=["GET"])
@@ -164,6 +157,15 @@ def password_reset_confirm():
                 "error": {"message": "Password reset is not available."},
             }
         ), 503
+
+    client_ip = _client_ip()
+    if not _rate_limit_ok(f"confirm-ip:{client_ip}", _CONFIRM_IP_LIMIT):
+        return jsonify(
+            {
+                "success": False,
+                "error": {"message": "Invalid or expired reset link."},
+            }
+        ), 400
 
     data = request.json or {}
     raw_token = (data.get("token") or "").strip()

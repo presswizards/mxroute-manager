@@ -1,6 +1,7 @@
 // On DOM Loaded
 document.addEventListener("DOMContentLoaded", async () => {
     initConfirmModals();
+    initDelegatedUiActions();
 
     const refreshDnsHealthBtn = document.getElementById("btn-refresh-dns-health");
     if (refreshDnsHealthBtn) {

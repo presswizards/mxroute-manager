@@ -232,12 +232,12 @@ def test_notify_audit_event_calls_apprise(mock_apprise_cls):
             return_value={
                 "enabled": True,
                 "actions": ["domain.delete"],
-                "targets": [{"label": "t", "url": "json://localhost/test"}],
+                "targets": [{"label": "t", "url": "json://hooks.example.com/test"}],
             },
         ),
         patch(
             "services.notifications.resolve_apprise_urls",
-            return_value=["json://localhost/test"],
+            return_value=["json://hooks.example.com/test"],
         ),
     ):
         assert notify_audit_event(entry) is True
@@ -248,12 +248,12 @@ def test_resolve_apprise_urls_from_db(fresh_db):
     db_module.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "db", "url": "json://localhost/db"}],
+            "targets": [{"label": "db", "url": "json://hooks.example.com/db"}],
             "actions": ["domain.delete"],
         }
     )
     urls = resolve_apprise_urls()
-    assert "json://localhost/db" in urls
+    assert "json://hooks.example.com/db" in urls
 
 
 def test_notification_api_round_trip(admin_client):

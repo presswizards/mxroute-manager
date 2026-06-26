@@ -205,3 +205,43 @@ def test_fleet_overview_hides_mailbox_count_without_permission(
     assert "mailbox_count" not in rows["alpha.com"]
     assert "mailbox_count" not in rows["beta.com"]
 
+
+def test_fleet_refresh_delegate_scans_only_visible_domains(
+    fresh_db, client, db_connection
+):
+    insert_user_with_grants(
+        db_connection,
+        "editor@local",
+        grants=[{"domain": "allowed.com", "permissions": ["dashboard"]}],
+    )
+    token = prime_authenticated_session(client, "editor@local")
+
+    with (
+        patch(
+            "routes.domains.mx_request_raw",
+            return_value=({"data": ["allowed.com", "secret.com"]}, 200),
+        ),
+        patch("routes.domains.run_fleet_overview_scan") as mock_scan,
+    ):
+        response = client.post(
+            "/api/fleet/overview/refresh",
+            headers=auth_post_headers(token),
+        )
+
+    assert response.status_code == 200
+    mock_scan.assert_called_once_with(["allowed.com"], merge=True)
+
+
+def test_fleet_refresh_admin_scans_all_domains(fresh_db, client, admin_token):
+    with patch("routes.domains.run_fleet_overview_scan") as mock_scan:
+        with patch(
+            "routes.domains.mx_request_raw",
+            return_value=({"data": ["alpha.com", "beta.com"]}, 200),
+        ):
+            response = client.post(
+                "/api/fleet/overview/refresh",
+                headers=auth_post_headers(admin_token),
+            )
+
+    assert response.status_code == 200
+    mock_scan.assert_called_once_with()

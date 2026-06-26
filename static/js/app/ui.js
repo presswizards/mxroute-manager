@@ -86,6 +86,30 @@ function initConfirmModals() {
     });
 }
 
+function initDelegatedUiActions() {
+    document.addEventListener("click", (event) => {
+        const navLink = event.target.closest("[data-nav-tab]");
+        if (navLink) {
+            event.preventDefault();
+            document.querySelector(`[data-tab='${navLink.dataset.navTab}']`)?.click();
+            return;
+        }
+        const modalClose = event.target.closest("[data-close-modal]");
+        if (modalClose) {
+            closeModal(modalClose.dataset.closeModal);
+            return;
+        }
+        if (event.target.closest("[data-dismiss-alert]")) {
+            dismissAlert();
+            return;
+        }
+        if (event.target.closest("[data-dismiss-credentials]")) {
+            const card = document.getElementById("credentials-output-card");
+            if (card) card.style.display = "none";
+        }
+    });
+}
+
 function showConfirm({ title, message, confirmLabel = "Confirm", variant = "danger" }) {
     return new Promise((resolve) => {
         _confirmResolver = resolve;

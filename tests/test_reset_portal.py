@@ -3,6 +3,7 @@
 import io
 import os
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 
@@ -149,6 +150,30 @@ def test_portal_request_rejects_other_domain_mailbox(fresh_db, client):
     )
     assert response.status_code == 200
     assert response.get_json()["success"] is True
+
+
+def test_manager_host_rejects_portal_domain_mailbox(fresh_db, client):
+    fresh_db.upsert_reset_portal("example.com", True, "reset", "")
+
+    with (
+        patch("routes.password_reset.is_password_reset_available", return_value=True),
+        patch("routes.password_reset.send_password_reset_email") as mock_send,
+    ):
+        csrf_token = csrf_token_from_response(
+            client, path="/api/public/password-reset/status", host="localhost"
+        )
+        response = client.post(
+            "/api/public/password-reset/request",
+            headers={
+                "Host": "localhost",
+                "X-CSRF-Token": csrf_token,
+            },
+            json={"mailbox_email": "user@example.com"},
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    mock_send.assert_not_called()
 
 
 def test_logo_upload_without_prior_save(fresh_db, client, db_connection):

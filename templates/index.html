@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>MXroute Manager</title>
     <meta name="description"
         content="Control panel for managing hosted MXroute email domains, quotas, forwards, and spam protection.">
@@ -67,7 +68,7 @@
     <div id="alert-banner" class="alert-banner">
         <span id="alert-banner-icon">{{ icon('bell') }}</span>
         <div style="flex: 1;" id="alert-banner-text">Welcome to the Dashboard</div>
-        <button class="alert-banner-close" onclick="dismissAlert()">×</button>
+        <button type="button" class="alert-banner-close" data-dismiss-alert>×</button>
     </div>
 
     <!-- Modals -->

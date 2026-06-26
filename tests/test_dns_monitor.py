@@ -11,7 +11,7 @@ def test_dns_monitor_skips_when_disabled(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "x", "url": "json://localhost", "service": "json"}],
+            "targets": [{"label": "x", "url": "json://hooks.example.com", "service": "json"}],
             "actions": ["dns.health_alert"],
             "dns_monitor": {"enabled": False, "interval_hours": 1},
         }
@@ -25,7 +25,7 @@ def test_dns_monitor_alerts_on_new_unhealthy(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "x", "url": "json://localhost", "service": "json"}],
+            "targets": [{"label": "x", "url": "json://hooks.example.com", "service": "json"}],
             "actions": ["dns.health_alert"],
             "dns_monitor": {"enabled": True, "interval_hours": 1},
         }
@@ -55,7 +55,7 @@ def test_dns_monitor_respects_interval(fresh_db):
     fresh_db.save_notification_settings(
         {
             "enabled": True,
-            "targets": [{"label": "x", "url": "json://localhost", "service": "json"}],
+            "targets": [{"label": "x", "url": "json://hooks.example.com", "service": "json"}],
             "actions": ["dns.health_alert"],
             "dns_monitor": {"enabled": True, "interval_hours": 24},
         }

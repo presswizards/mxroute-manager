@@ -4,7 +4,7 @@
         <div class="modal-header">
             <h3>Update Mailbox Password</h3>
             <button class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-update-password')">×</button>
+                data-close-modal='modal-update-password'>×</button>
         </div>
         <form id="form-modal-update-pass">
             <input type="hidden" id="modal-pass-username">
@@ -27,7 +27,7 @@
             </ul>
             <div class="flex-row justify-end" style="justify-content: flex-end;">
                 <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="closeModal('modal-update-password')">Cancel</button>
+                    data-close-modal='modal-update-password'>Cancel</button>
                 <button type="submit" id="btn-modal-pass-submit" class="btn btn-primary btn-sm" disabled>Save New
                     Password</button>
             </div>
@@ -41,7 +41,7 @@
         <div class="modal-header">
             <h3>Recovery Email</h3>
             <button class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-update-recovery')">×</button>
+                data-close-modal='modal-update-recovery'>×</button>
         </div>
         <form id="form-modal-update-recovery">
             <input type="hidden" id="modal-recovery-username">
@@ -58,7 +58,7 @@
             </div>
             <div class="flex-row justify-end" style="justify-content: flex-end;">
                 <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="closeModal('modal-update-recovery')">Cancel</button>
+                    data-close-modal='modal-update-recovery'>Cancel</button>
                 <button type="submit" class="btn btn-primary btn-sm">Save Recovery Email</button>
             </div>
         </form>
@@ -71,7 +71,7 @@
         <div class="modal-header">
             <h3>Adjust Mailbox Resources</h3>
             <button class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-update-quota')">×</button>
+                data-close-modal='modal-update-quota'>×</button>
         </div>
         <form id="form-modal-update-quota">
             <input type="hidden" id="modal-quota-username">
@@ -95,7 +95,7 @@
             </div>
             <div class="flex-row justify-end" style="justify-content: flex-end; gap: 1rem;">
                 <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="closeModal('modal-update-quota')">Cancel</button>
+                    data-close-modal='modal-update-quota'>Cancel</button>
                 <button type="submit" class="btn btn-primary btn-sm">Save Changes</button>
             </div>
         </form>
@@ -108,14 +108,14 @@
         <div class="modal-header">
             <h3>Email Client Setup</h3>
             <button type="button" class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-mail-client-setup')">×</button>
+                data-close-modal='modal-mail-client-setup'>×</button>
         </div>
         <p id="modal-mail-client-setup-email" class="stat-card-subtitle mb-4"></p>
         <div id="modal-mail-client-setup-body"></div>
         <div class="flex-row justify-end" style="justify-content: flex-end; gap: 0.75rem; margin-top: 1.25rem;">
             <button type="button" class="btn btn-primary btn-sm" id="btn-modal-copy-mail-client-setup">{{ icon('clipboard') }} Copy All</button>
             <button type="button" class="btn btn-secondary btn-sm"
-                onclick="closeModal('modal-mail-client-setup')">Close</button>
+                data-close-modal='modal-mail-client-setup'>Close</button>
         </div>
     </div>
 </div>
@@ -161,7 +161,7 @@
         <div class="modal-header">
             <h3>Add Domain Pointer</h3>
             <button class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-add-pointer')">×</button>
+                data-close-modal='modal-add-pointer'>×</button>
         </div>
         <form id="form-modal-create-pointer">
             <div class="form-group mb-4">
@@ -177,7 +177,7 @@
             </div>
             <div class="flex-row justify-end" style="justify-content: flex-end; gap: 1rem;">
                 <button type="button" class="btn btn-secondary btn-sm"
-                    onclick="closeModal('modal-add-pointer')">Cancel</button>
+                    data-close-modal='modal-add-pointer'>Cancel</button>
                 <button type="submit" class="btn btn-primary btn-sm">Add Pointer</button>
             </div>
         </form>
@@ -257,7 +257,7 @@
     <div class="modal-content" style="max-width: 760px;">
         <div class="modal-header">
             <h3>Import mailboxes from CSV</h3>
-            <button type="button" class="alert-banner-close" style="font-size: 1.5rem;" onclick="closeModal('modal-mailbox-import')">×</button>
+            <button type="button" class="alert-banner-close" style="font-size: 1.5rem;" data-close-modal='modal-mailbox-import'>×</button>
         </div>
         <p class="stat-card-subtitle mb-4">
             Default domain: <strong id="mailbox-import-domain-hint">example.com</strong>.
@@ -320,7 +320,7 @@
         <div class="modal-header">
             <h3>DMARC Policy</h3>
             <button type="button" class="alert-banner-close" style="font-size: 1.5rem;"
-                onclick="closeModal('modal-domain-dmarc')">×</button>
+                data-close-modal='modal-domain-dmarc'>×</button>
         </div>
         <p class="stat-card-subtitle mb-4" id="modal-dmarc-domain-label"></p>
         <p class="stat-card-subtitle mb-4" style="font-size: 0.85rem;">
@@ -339,7 +339,7 @@
             </span>
         </div>
         <div class="flex-row justify-end" style="justify-content: flex-end; gap: 0.75rem;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('modal-domain-dmarc')">Cancel</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-close-modal='modal-domain-dmarc'>Cancel</button>
             <button type="button" class="btn btn-primary btn-sm" id="btn-modal-dmarc-save">Save Policy</button>
         </div>
     </div>

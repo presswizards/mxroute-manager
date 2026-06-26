@@ -27,6 +27,7 @@ from utils.api_response import (
     log_and_json_error,
 )
 from utils.auth_helpers import clear_oidc_config_cache, get_current_user, require_admin
+from utils.ssrf_guard import validate_http_service_url, validate_smtp_host
 from utils.audit_log import (
     list_available_log_dates,
     normalize_log_limit,
@@ -35,6 +36,17 @@ from utils.audit_log import (
     safe_log_path,
     stream_audit_csv,
 )
+
+
+def _validated_setting_value(key, value):
+    val = str(value).strip()
+    if not val:
+        return val
+    if key == "OIDC_DISCOVERY_URL":
+        validate_http_service_url(val, require_https=True)
+    elif key == "RESET_SMTP_HOST":
+        validate_smtp_host(val)
+    return val
 
 
 @admin_bp.route("/api/admin/settings", methods=["GET"])
@@ -54,7 +66,10 @@ def update_settings():
 
             for key in SETTINGS_UI_KEYS:
                 if key in data:
-                    val = str(data[key]).strip()
+                    try:
+                        val = _validated_setting_value(key, data[key])
+                    except ValueError as exc:
+                        return json_error(client_value_error_message(exc), 400)
                     cursor.execute(
                         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                         (key, val),

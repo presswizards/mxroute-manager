@@ -165,7 +165,9 @@ def test_oidc_callback_promotes_admin_by_group(
         assert sess["user"]["is_admin"] is True
 
 
-def test_oidc_callback_rejects_unverified_email(oidc_on, fresh_db, client, db_connection):
+def test_oidc_callback_rejects_unverified_email(
+    oidc_on, fresh_db, client, db_connection
+):
     insert_user_with_grants(
         db_connection,
         "delegate@example.com",

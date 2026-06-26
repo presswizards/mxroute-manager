@@ -55,3 +55,23 @@ def test_fleet_overview_force_bypasses_interval(fresh_db):
         state = maybe_run_fleet_overview(force=True)
 
     assert state["domains"]["example.com"]["mailbox_count"] == 3
+
+
+def test_fleet_overview_scan_merge_updates_subset(fresh_db):
+    fresh_db.save_fleet_overview_state(
+        {
+            "last_run_at": time.time() - 60,
+            "domains": {
+                "alpha.com": {"mailbox_count": 1},
+                "beta.com": {"mailbox_count": 9},
+            },
+        }
+    )
+    with patch(
+        "services.fleet_monitor._run_domain_scans",
+        return_value={"alpha.com": {"mailbox_count": 2}},
+    ):
+        state = run_fleet_overview_scan(["alpha.com"], merge=True)
+
+    assert state["domains"]["alpha.com"]["mailbox_count"] == 2
+    assert state["domains"]["beta.com"]["mailbox_count"] == 9

@@ -1,12 +1,14 @@
 import apprise
 
 from utils.apprise.secrets import format_env_cred_snippet
+from utils.ssrf_guard import validate_apprise_outbound_url
 
 
 def validate_apprise_url(url):
     url = str(url or "").strip()
     if not url:
         raise ValueError("URL is required")
+    validate_apprise_outbound_url(url)
     apobj = apprise.Apprise()
     if not apobj.add(url):
         raise ValueError("Invalid or unsupported Apprise URL")

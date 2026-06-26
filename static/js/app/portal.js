@@ -104,7 +104,7 @@ async function uploadResetPortalLogoFile(file) {
     try {
         const response = await fetch(`/api/domains/${encodeURIComponent(resetPortalDomain)}/reset-portal/logo`, {
             method: "POST",
-            headers: { "X-CSRF-Token": getCookie("csrf_token") || "" },
+            headers: { "X-CSRF-Token": getCsrfToken() },
             body: formData,
         });
         const result = await response.json();
@@ -128,7 +128,7 @@ async function deployResetPortalDns() {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "X-CSRF-Token": getCookie("csrf_token") || "",
+                    "X-CSRF-Token": getCsrfToken(),
                 },
                 body: JSON.stringify({}),
                 signal: controller.signal,
